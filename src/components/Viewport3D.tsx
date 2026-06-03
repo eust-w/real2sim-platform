@@ -1,6 +1,6 @@
-import { Environment, Float, MeshDistortMaterial, OrbitControls, ContactShadows } from '@react-three/drei'
+import { Float, MeshDistortMaterial, OrbitControls, ContactShadows } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { useRef } from 'react'
+import { Component, useRef, type ErrorInfo, type ReactNode } from 'react'
 import type { Mesh } from 'three'
 import type { SimulationProfile, StoredTask } from '../lib/api'
 import { getModelUrl } from '../lib/api'
@@ -10,6 +10,30 @@ type Viewport3DProps = {
   task?: StoredTask | null
   simulation: SimulationProfile
   labels: Messages['viewport']
+}
+
+class CanvasErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('3D viewport failed', error, info.componentStack)
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="canvas-fallback" role="status">
+          3D preview unavailable
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
 }
 
 function SoftBody({ simulation }: { simulation: SimulationProfile }) {
@@ -80,15 +104,18 @@ export function Viewport3D({ task, simulation, labels }: Viewport3DProps) {
         ) : null}
       </div>
       <div className="canvas-wrap">
-        <Canvas camera={{ position: [3.7, 2.5, 4.2], fov: 42 }} gl={{ preserveDrawingBuffer: true, antialias: true }} shadows>
-          <ambientLight intensity={0.72} />
-          <directionalLight position={[4, 5, 3]} intensity={2.1} castShadow />
-          <SoftBody simulation={simulation} />
-          <StageGrid />
-          <ContactShadows position={[0, -1.08, 0]} opacity={0.28} scale={5} blur={2.4} far={3} />
-          <Environment preset="studio" />
-          <OrbitControls enablePan={false} minDistance={3.4} maxDistance={8} />
-        </Canvas>
+        <CanvasErrorBoundary>
+          <Canvas camera={{ position: [3.7, 2.5, 4.2], fov: 42 }} gl={{ preserveDrawingBuffer: true, antialias: true }} shadows>
+            <ambientLight intensity={1} />
+            <hemisphereLight args={['#ffffff', '#9ca3af', 1.25]} />
+            <directionalLight position={[4, 5, 3]} intensity={2.4} castShadow />
+            <pointLight position={[-3, 2.2, -2]} intensity={0.65} color="#5eead4" />
+            <SoftBody simulation={simulation} />
+            <StageGrid />
+            <ContactShadows position={[0, -1.08, 0]} opacity={0.28} scale={5} blur={2.4} far={3} />
+            <OrbitControls enablePan={false} minDistance={3.4} maxDistance={8} />
+          </Canvas>
+        </CanvasErrorBoundary>
       </div>
     </section>
   )
