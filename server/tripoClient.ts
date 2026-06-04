@@ -3,9 +3,14 @@ import type { CreateTripoTaskInput } from './schemas.js'
 export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELED' | 'UNKNOWN'
 
 export type TripoTaskResult = {
+  model_url?: string
   pbr_model_url?: string
   base_model_url?: string
   rendered_image_url?: string
+  local_model_url?: string
+  local_pbr_model_url?: string
+  local_base_model_url?: string
+  local_rendered_image_url?: string
   orig_prompt?: string
 }
 

@@ -1,10 +1,15 @@
 import cors from 'cors'
 import dotenv from 'dotenv'
 import express from 'express'
+import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import path from 'node:path'
 import { ZodError } from 'zod'
+import { assetRoot, cacheTaskAssets, cacheTasksAssets } from './assetStore.js'
 import { buildFlexiblePrompt, createSimulationExport } from './flex.js'
+import { createGenesisPackage } from './genesisPackage.js'
 import { createFlexTaskSchema, createTripoTaskSchema } from './schemas.js'
-import { getTask, mergeTaskOutput, readTasks, upsertTask, type StoredTask } from './taskStore.js'
+import { getTask, mergeTaskOutput, readTasks, upsertTask, writeTasks, type StoredTask } from './taskStore.js'
 import { createTripoTask, queryTripoTask } from './tripoClient.js'
 
 dotenv.config({ path: '.env.local' })
@@ -15,6 +20,22 @@ const port = Number(process.env.PORT || 8787)
 
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
+app.use('/assets', express.static(assetRoot))
+
+async function readTasksWithLocalAssets() {
+  const tasks = await readTasks()
+  const cached = await cacheTasksAssets(tasks)
+  if (cached.changed) {
+    await writeTasks(cached.tasks)
+  }
+  return cached.tasks
+}
+
+async function upsertTaskWithLocalAssets(task: StoredTask) {
+  const cachedTask = await cacheTaskAssets(task)
+  await upsertTask(cachedTask)
+  return cachedTask
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -27,7 +48,7 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/tripo/tasks', async (_req, res, next) => {
   try {
-    res.json({ tasks: await readTasks() })
+    res.json({ tasks: await readTasksWithLocalAssets() })
   } catch (error) {
     next(error)
   }
@@ -58,8 +79,8 @@ app.post('/api/tripo/tasks', async (req, res, next) => {
       updatedAt: now,
     }
 
-    await upsertTask(task)
-    res.status(201).json({ task })
+    const savedTask = await upsertTaskWithLocalAssets(task)
+    res.status(201).json({ task: savedTask })
   } catch (error) {
     next(error)
   }
@@ -98,8 +119,8 @@ app.get('/api/tripo/tasks/:taskId', async (req, res, next) => {
           updatedAt: new Date().toISOString(),
         } satisfies StoredTask)
 
-    await upsertTask(updated)
-    res.json({ task: updated })
+    const savedTask = await upsertTaskWithLocalAssets(updated)
+    res.json({ task: savedTask })
   } catch (error) {
     next(error)
   }
@@ -135,12 +156,52 @@ app.post('/api/flex/tasks', async (req, res, next) => {
       updatedAt: now,
     }
 
-    await upsertTask(task)
+    const savedTask = await upsertTaskWithLocalAssets(task)
     res.status(201).json({
-      task,
+      task: savedTask,
       prompt,
       simulationExport: createSimulationExport(input),
     })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/genesis/packages/:taskId', async (req, res, next) => {
+  try {
+    const task = await getTask(req.params.taskId)
+    if (!task) {
+      res.status(404).json({ error: 'Task not found.' })
+      return
+    }
+
+    const savedTask = await upsertTaskWithLocalAssets(task)
+    const exported = await createGenesisPackage(savedTask)
+    res.json({
+      manifest: exported.manifest,
+      archiveUrl: `/api/genesis/packages/${encodeURIComponent(savedTask.taskId)}/download`,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/genesis/packages/:taskId/download', async (req, res, next) => {
+  try {
+    const task = await getTask(req.params.taskId)
+    if (!task) {
+      res.status(404).json({ error: 'Task not found.' })
+      return
+    }
+
+    const savedTask = await upsertTaskWithLocalAssets(task)
+    const exported = await createGenesisPackage(savedTask)
+    const archiveStat = await stat(exported.archivePath)
+    const filename = `${savedTask.taskId}-genesis-flex.tar.gz`
+    res.setHeader('Content-Type', 'application/gzip')
+    res.setHeader('Content-Length', archiveStat.size.toString())
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    createReadStream(exported.archivePath).on('error', next).pipe(res)
   } catch (error) {
     next(error)
   }
@@ -158,5 +219,6 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 })
 
 app.listen(port, () => {
+  console.log(`real2sim assets served from ${path.relative(process.cwd(), assetRoot) || assetRoot}`)
   console.log(`real2sim API listening on http://localhost:${port}`)
 })

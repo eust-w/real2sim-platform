@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+echo "pre-commit: running unit tests"
+npm run test:run
+
+echo "pre-commit: running lint"
+npm run lint
+
+echo "pre-commit: running production build"
+npm run build

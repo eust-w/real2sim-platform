@@ -1,9 +1,14 @@
 export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELED' | 'UNKNOWN'
 
 export type TripoTaskResult = {
+  model_url?: string
   pbr_model_url?: string
   base_model_url?: string
   rendered_image_url?: string
+  local_model_url?: string
+  local_pbr_model_url?: string
+  local_base_model_url?: string
+  local_rendered_image_url?: string
   orig_prompt?: string
 }
 
@@ -109,9 +114,23 @@ export function getPrimaryResult(task?: StoredTask | null) {
   return task?.output?.results?.[0]
 }
 
-export function getModelUrl(task?: StoredTask | null) {
+export function getPreviewImageUrl(task?: StoredTask | null) {
   const result = getPrimaryResult(task)
-  return result?.pbr_model_url || result?.base_model_url || ''
+  return result?.local_rendered_image_url || ''
+}
+
+export function getPbrModelUrl(task?: StoredTask | null) {
+  const result = getPrimaryResult(task)
+  return result?.local_pbr_model_url || ''
+}
+
+export function getBaseModelUrl(task?: StoredTask | null) {
+  const result = getPrimaryResult(task)
+  return result?.local_base_model_url || result?.local_model_url || ''
+}
+
+export function getModelUrl(task?: StoredTask | null) {
+  return getPbrModelUrl(task) || getBaseModelUrl(task)
 }
 
 export function getSourcePrompt(task?: StoredTask | null) {

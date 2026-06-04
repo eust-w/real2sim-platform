@@ -1,9 +1,9 @@
-import { Float, MeshDistortMaterial, OrbitControls, ContactShadows } from '@react-three/drei'
+import { Bounds, Center, ContactShadows, Float, MeshDistortMaterial, OrbitControls, useGLTF } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { Component, useRef, type ErrorInfo, type ReactNode } from 'react'
-import type { Mesh } from 'three'
+import { Component, Suspense, useMemo, useRef, type ErrorInfo, type ReactNode } from 'react'
+import type { Mesh, Object3D } from 'three'
 import type { SimulationProfile, StoredTask } from '../lib/api'
-import { getModelUrl } from '../lib/api'
+import { getModelUrl, getPreviewImageUrl } from '../lib/api'
 import type { Messages } from '../lib/i18n'
 
 type Viewport3DProps = {
@@ -86,9 +86,37 @@ function StageGrid() {
   )
 }
 
+function enableShadows(object: Object3D) {
+  object.traverse((child) => {
+    const mesh = child as Mesh
+    if (mesh.isMesh) {
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+    }
+  })
+}
+
+function AssetModel({ url }: { url: string }) {
+  const { scene } = useGLTF(url)
+  const previewScene = useMemo(() => {
+    const clonedScene = scene.clone(true)
+    enableShadows(clonedScene)
+    return clonedScene
+  }, [scene])
+
+  return (
+    <Bounds fit clip observe margin={1.25}>
+      <Center>
+        <primitive object={previewScene} />
+      </Center>
+    </Bounds>
+  )
+}
+
 export function Viewport3D({ task, simulation, labels }: Viewport3DProps) {
   const modelUrl = getModelUrl(task)
-  const status = modelUrl ? labels.modelReady : task ? labels.preview : labels.idle
+  const previewImageUrl = getPreviewImageUrl(task)
+  const status = modelUrl ? labels.modelReady : previewImageUrl ? labels.imageReady : task ? labels.preview : labels.idle
 
   return (
     <section className="viewport-panel" aria-label={labels.label}>
@@ -104,18 +132,26 @@ export function Viewport3D({ task, simulation, labels }: Viewport3DProps) {
         ) : null}
       </div>
       <div className="canvas-wrap">
-        <CanvasErrorBoundary>
-          <Canvas camera={{ position: [3.7, 2.5, 4.2], fov: 42 }} gl={{ preserveDrawingBuffer: true, antialias: true }} shadows>
-            <ambientLight intensity={1} />
-            <hemisphereLight args={['#ffffff', '#9ca3af', 1.25]} />
-            <directionalLight position={[4, 5, 3]} intensity={2.4} castShadow />
-            <pointLight position={[-3, 2.2, -2]} intensity={0.65} color="#5eead4" />
-            <SoftBody simulation={simulation} />
-            <StageGrid />
-            <ContactShadows position={[0, -1.08, 0]} opacity={0.28} scale={5} blur={2.4} far={3} />
-            <OrbitControls enablePan={false} minDistance={3.4} maxDistance={8} />
-          </Canvas>
-        </CanvasErrorBoundary>
+        {modelUrl || !previewImageUrl ? (
+          <CanvasErrorBoundary>
+            <Canvas camera={{ position: [3.7, 2.5, 4.2], fov: 42 }} gl={{ preserveDrawingBuffer: true, antialias: true }} shadows>
+              <ambientLight intensity={1} />
+              <hemisphereLight args={['#ffffff', '#9ca3af', 1.25]} />
+              <directionalLight position={[4, 5, 3]} intensity={2.4} castShadow />
+              <pointLight position={[-3, 2.2, -2]} intensity={0.65} color="#5eead4" />
+              <Suspense fallback={<SoftBody simulation={simulation} />}>
+                {modelUrl ? <AssetModel url={modelUrl} /> : <SoftBody simulation={simulation} />}
+              </Suspense>
+              <StageGrid />
+              <ContactShadows position={[0, -1.08, 0]} opacity={0.28} scale={5} blur={2.4} far={3} />
+              <OrbitControls enablePan={false} minDistance={3.4} maxDistance={8} />
+            </Canvas>
+          </CanvasErrorBoundary>
+        ) : (
+          <a href={previewImageUrl} target="_blank" rel="noreferrer" className="viewport-image-preview">
+            <img src={previewImageUrl} alt={labels.imageReady} />
+          </a>
+        )}
       </div>
     </section>
   )

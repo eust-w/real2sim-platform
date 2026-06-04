@@ -9,6 +9,7 @@ import {
   Image,
   Languages,
   Layers,
+  Package,
   RefreshCw,
   SlidersHorizontal,
   Sparkles,
@@ -20,7 +21,9 @@ import {
   createFlexTask,
   createGenerationTask,
   getModelUrl,
-  getPrimaryResult,
+  getBaseModelUrl,
+  getPreviewImageUrl,
+  getPbrModelUrl,
   getSourcePrompt,
   health,
   isLiveStatus,
@@ -159,8 +162,10 @@ function TaskPanel({
   onUseForFlex: (task: StoredTask) => void
   t: Messages
 }) {
-  const result = getPrimaryResult(task)
   const modelUrl = getModelUrl(task)
+  const previewImageUrl = getPreviewImageUrl(task)
+  const pbrModelUrl = getPbrModelUrl(task)
+  const baseModelUrl = getBaseModelUrl(task)
 
   return (
     <aside className="result-panel">
@@ -174,9 +179,9 @@ function TaskPanel({
 
       {task ? (
         <>
-          {result?.rendered_image_url ? (
-            <a href={result.rendered_image_url} target="_blank" rel="noreferrer" className="render-preview">
-              <img src={result.rendered_image_url} alt={t.task.rendered} />
+          {previewImageUrl ? (
+            <a href={previewImageUrl} target="_blank" rel="noreferrer" className="render-preview">
+              <img src={previewImageUrl} alt={t.task.rendered} />
             </a>
           ) : (
             <div className="render-empty">
@@ -206,16 +211,22 @@ function TaskPanel({
               <RefreshCw size={16} />
               {t.task.poll}
             </button>
-            {result?.pbr_model_url ? (
-              <a href={result.pbr_model_url} className="primary-link" target="_blank" rel="noreferrer">
+            {pbrModelUrl ? (
+              <a href={pbrModelUrl} className="primary-link" target="_blank" rel="noreferrer">
                 <Download size={16} />
                 {t.task.downloadPbr}
               </a>
             ) : null}
-            {result?.base_model_url ? (
-              <a href={result.base_model_url} className="secondary-link" target="_blank" rel="noreferrer">
+            {baseModelUrl ? (
+              <a href={baseModelUrl} className="secondary-link" target="_blank" rel="noreferrer">
                 <Download size={16} />
                 {t.task.downloadBase}
+              </a>
+            ) : null}
+            {task.kind === 'flex' && modelUrl ? (
+              <a href={`/api/genesis/packages/${encodeURIComponent(task.taskId)}/download`} className="secondary-link">
+                <Package size={16} />
+                {t.task.exportGenesis}
               </a>
             ) : null}
             {modelUrl ? (
@@ -703,12 +714,12 @@ function App() {
               <div className="asset-list">
                 {tasks.length ? (
                   tasks.map((task) => {
-                    const result = getPrimaryResult(task)
                     const modelUrl = getModelUrl(task)
+                    const previewImageUrl = getPreviewImageUrl(task)
                     return (
                       <article className="asset-row" key={task.taskId}>
-                        {result?.rendered_image_url ? (
-                          <img src={result.rendered_image_url} alt="" />
+                        {previewImageUrl ? (
+                          <img src={previewImageUrl} alt="" />
                         ) : (
                           <div className="asset-thumb">
                             <Box size={18} />

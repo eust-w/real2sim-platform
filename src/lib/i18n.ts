@@ -80,6 +80,7 @@ const dictionaries = {
       poll: '查询状态',
       downloadPbr: '下载 PBR GLB',
       downloadBase: '下载基础 GLB',
+      exportGenesis: '导出 Genesis 包',
       rendered: '渲染预览',
       pending: '排队中',
       running: '处理中',
@@ -91,6 +92,7 @@ const dictionaries = {
     viewport: {
       label: '3D 预览',
       modelReady: '模型链接已生成',
+      imageReady: '渲染图已生成',
       preview: '软体预览',
       idle: '等待生成',
     },
@@ -182,6 +184,7 @@ const dictionaries = {
       poll: 'Query Status',
       downloadPbr: 'Download PBR GLB',
       downloadBase: 'Download Base GLB',
+      exportGenesis: 'Export Genesis Package',
       rendered: 'Rendered Preview',
       pending: 'Pending',
       running: 'Running',
@@ -193,6 +196,7 @@ const dictionaries = {
     viewport: {
       label: '3D Preview',
       modelReady: 'Model link generated',
+      imageReady: 'Rendered image generated',
       preview: 'Soft preview',
       idle: 'Waiting',
     },
