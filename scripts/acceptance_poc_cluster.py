@@ -398,6 +398,16 @@ def upload_with_resume(run: AcceptanceRun, archive: Path, checksum: str) -> dict
     upload_id = created["id"]
     total_parts = int(created["total_parts"])
     pause_after = max(1, total_parts // 2)
+    run.report["storage"] = {
+        **run.report.get("storage", {}),
+        "upload_id": upload_id,
+        "checksum": checksum,
+        "size_bytes": archive.stat().st_size,
+        "total_parts": total_parts,
+        "resume_checkpoint_part": pause_after,
+        "status": "uploading",
+    }
+    run.save()
     with archive.open("rb") as handle:
         for part in range(1, total_parts + 1):
             body = handle.read(chunk_size)
@@ -417,12 +427,14 @@ def upload_with_resume(run: AcceptanceRun, archive: Path, checksum: str) -> dict
     dataset = completed["dataset"]
     run.check("上传数据写入受控 BOS 前缀", str(dataset.get("storage_uri") or "").startswith("bos://testxyz/real2sim-poc/uploads/"), dataset.get("storage_uri"))
     run.report["storage"] = {
+        **run.report.get("storage", {}),
         "upload_id": upload_id,
         "storage_uri": dataset.get("storage_uri"),
         "checksum": checksum,
         "size_bytes": archive.stat().st_size,
         "total_parts": total_parts,
         "resume_checkpoint_part": pause_after,
+        "status": "completed",
     }
     run.report["datasets"].append({"id": dataset["id"], "role": "playroom_upload", "storage_uri": dataset.get("storage_uri")})
     return dataset
@@ -439,7 +451,8 @@ def validate_infrastructure(run: AcceptanceRun) -> None:
     runtimes = run.report["capabilities"].get("runtimes") or {}
     for name in ("anysplat", "mujoco", "motrixsim", "discoverse_act", "rm65_controller"):
         run.check(f"真实运行时就绪: {name}", bool((runtimes.get(name) or {}).get("ready")), runtimes.get(name))
-    run.check("BOS 前缀隔离", run.report["capabilities"].get("storage", {}).get("prefix") == "real2sim-poc", run.report["capabilities"].get("storage"))
+    bos = (run.report["capabilities"].get("storage") or {}).get("bos") or {}
+    run.check("BOS 前缀隔离", bos.get("prefix") == "real2sim-poc", bos)
 
 
 def exercise_task_operations(run: AcceptanceRun, scene_id: str | None) -> None:
