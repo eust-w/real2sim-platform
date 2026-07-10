@@ -3098,7 +3098,7 @@ def _act_runtime_import_ready(discoverse_root_value: str, discoverse_commit: str
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join([str(act_root), str(discoverse_root), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     completed = subprocess.run(
-        [sys.executable, "-c", "from policy import ACTPolicy; assert ACTPolicy is not None"],
+        [sys.executable, "-c", "from policies.act.act import ACTPolicy; assert ACTPolicy is not None"],
         cwd=act_root,
         env=env,
         text=True,

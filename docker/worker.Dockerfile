@@ -61,7 +61,7 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/Motphys/motrix
     ln -s /opt/conda/bin/pip /opt/real2sim_paper_runtime/envs/anysplat/bin/pip
 
 RUN python -c 'import mujoco, motrixsim, torch; from huggingface_hub import snapshot_download; assert torch.__version__.startswith("2.2")' && \
-    PYTHONPATH=/opt/DISCOVERSE/policies/act:/opt/DISCOVERSE python -c 'from policy import ACTPolicy; assert ACTPolicy is not None' && \
+    PYTHONPATH=/opt/DISCOVERSE/policies/act:/opt/DISCOVERSE python -c 'from policies.act.act import ACTPolicy; assert ACTPolicy is not None' && \
     PYTHONPATH=/opt/real2sim_paper_runtime/AnySplat python -c 'from src.model.model.anysplat import AnySplat; assert AnySplat is not None' && \
     test -f /opt/gs_playground/scripts/real2sim_video_motrix_scene.py
 
