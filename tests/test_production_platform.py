@@ -254,6 +254,14 @@ def test_production_artifact_index_includes_viewer_dataset_and_model_outputs(tmp
     assert names == {"scene.glb", "episode_0.hdf5", "policy_best.ckpt", "dataset_stats.pkl"}
 
 
+def test_poc_frontend_proxies_authenticated_run_artifacts() -> None:
+    nginx = (ROOT / "deploy/poc/nginx.conf").read_text(encoding="utf-8")
+    runs_location = nginx.split("location /runs/ {", 1)[1].split("}", 1)[0]
+    assert "proxy_pass http://real2sim_api;" in runs_location
+    assert "proxy_buffering off;" in runs_location
+    assert "proxy_read_timeout 7200s;" in runs_location
+
+
 @pytest.mark.integration
 def test_real_rm65_physical_collection_writes_act_hdf5(tmp_path: Path) -> None:
     scene = ROOT / "workspace/motrixsim_assets/parlour_rm65_pick_place/simulator_assets/rm65_table_pick_place.xml"
