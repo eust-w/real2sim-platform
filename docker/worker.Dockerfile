@@ -11,8 +11,6 @@ ARG VGGT_MODEL_REVISION=860abec7937da0a4c03c41d3c269c366e82abdf9
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    REAL2SIM_PLATFORM_BUILD_ID=${BUILD_ID} \
-    REAL2SIM_SOURCE_COMMIT=${SOURCE_COMMIT} \
     REAL2SIM_VGGT_MODEL_REVISION=${VGGT_MODEL_REVISION} \
     REAL2SIM_ANYSPLAT_ROOT=/opt/real2sim_paper_runtime/AnySplat \
     REAL2SIM_ANY_SPLAT_PYTHON=/opt/real2sim_paper_runtime/envs/anysplat/bin/python \
@@ -66,6 +64,9 @@ RUN python -c 'import mujoco, motrixsim, torch; from huggingface_hub import snap
     PYTHONPATH=/opt/DISCOVERSE/policies/act:/opt/DISCOVERSE python -c 'from policy import ACTPolicy; assert ACTPolicy is not None' && \
     PYTHONPATH=/opt/real2sim_paper_runtime/AnySplat python -c 'from src.model.model.anysplat import AnySplat; assert AnySplat is not None' && \
     test -f /opt/gs_playground/scripts/real2sim_video_motrix_scene.py
+
+ENV REAL2SIM_PLATFORM_BUILD_ID=${BUILD_ID} \
+    REAL2SIM_SOURCE_COMMIT=${SOURCE_COMMIT}
 
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin real2sim && \
     chown -R 10001:10001 /app
