@@ -77,7 +77,7 @@ spec:
       securityContext:
         runAsUser: 0
         allowPrivilegeEscalation: false
-        capabilities: {drop: [ALL]}
+        capabilities: {drop: [ALL], add: [CHOWN]}
       volumeMounts:
         - {name: host-var-lib, mountPath: /host-var-lib}
   volumes:
