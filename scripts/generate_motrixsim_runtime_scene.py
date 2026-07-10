@@ -51,7 +51,14 @@ def main() -> int:
     # the runtime copy so pick-place validation measures real bilateral contact.
     runtime_xml = runtime_xml.replace(
         'contype="0" conaffinity="0" density="0" group="2"/>',
-        'contype="1" conaffinity="1" density="0" friction="1.2 0.01 0.001" group="3"/>',
+        'contype="1" conaffinity="1" density="0" friction="2.0 0.02 0.002" group="3"/>',
+    )
+    runtime_xml = runtime_xml.replace(
+        'name="left_finger_pad_z_axis" type="capsule" fromto="-0.021275 0.04375 -0.06 -0.021275 0.04375 0.06"\n                      size="0.003"',
+        'name="left_finger_pad_z_axis" type="capsule" fromto="-0.021275 0.04375 -0.06 -0.021275 0.04375 0.06"\n                      size="0.010"',
+    ).replace(
+        'name="right_finger_pad_z_axis" type="capsule" fromto="-0.021275 0.04375 -0.06 -0.021275 0.04375 0.06"\n                      size="0.003"',
+        'name="right_finger_pad_z_axis" type="capsule" fromto="-0.021275 0.04375 -0.06 -0.021275 0.04375 0.06"\n                      size="0.010"',
     )
     runtime_rm65.write_text(runtime_xml, encoding="utf-8")
 

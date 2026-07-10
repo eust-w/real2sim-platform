@@ -34,12 +34,6 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=540)
     parser.add_argument("--no-render", action="store_true")
-    parser.add_argument(
-        "--grasp-mode",
-        choices=("physical", "kinematic_attachment"),
-        default="physical",
-        help="Use contact physics by default; kinematic attachment is retained only for diagnostics.",
-    )
     args = parser.parse_args()
 
     config = load_config()
@@ -61,7 +55,6 @@ def main() -> int:
         width=args.width,
         height=args.height,
         render=not args.no_render,
-        grasp_mode=args.grasp_mode,
     )
 
     artifacts = {}
@@ -81,7 +74,6 @@ def run_rollout(
     width: int,
     height: int,
     render: bool,
-    grasp_mode: str = "physical",
 ) -> dict[str, Any]:
     import mujoco
 
@@ -105,7 +97,7 @@ def run_rollout(
     qpos_adrs = [int(model.jnt_qposadr[jid]) for jid in joint_ids]
     dof_adrs = [int(model.jnt_dofadr[jid]) for jid in joint_ids]
 
-    duration_scale = 1 if grasp_mode == "kinematic_attachment" else 8
+    duration_scale = 8
     phases = [
         ("home", np.array([0.42, 0.00, 0.72]), 0.0, 35 * duration_scale, False),
         ("approach", np.array([0.71, 0.015, 0.42]), 0.0, 55 * duration_scale, False),
@@ -123,7 +115,6 @@ def run_rollout(
     if render:
         renderer = mujoco.Renderer(model, height=height, width=width)
 
-    attached = False
     contact_steps = 0
     bilateral_contact_steps = 0
     phase_contacts = {phase: {"contact_steps": 0, "bilateral_contact_steps": 0} for phase, *_ in phases}
@@ -135,7 +126,7 @@ def run_rollout(
     started = time.time()
     frame_stride = max(1, round((1.0 / model.opt.timestep) / fps))
     step_index = 0
-    for phase, target, gripper_ctrl, count, attach_cube in phases:
+    for phase, target, gripper_ctrl, count, _contact_expected in phases:
         if phase == "grasp":
             settled_cube_z = float(data.qpos[cube_qadr + 2])
             max_cube_z = settled_cube_z
@@ -145,14 +136,7 @@ def run_rollout(
             current = data.ctrl[:6].copy()
             data.ctrl[:6] = current * (1 - alpha) + q_target * alpha
             data.ctrl[6] = gripper_ctrl
-            if grasp_mode == "kinematic_attachment" and (attach_cube or attached):
-                attached = attach_cube
-                if attached:
-                    set_cube_pose(data, cube_qadr, data.site_xpos[site_id] + np.array([0.0, 0.0, -0.095]))
             mujoco.mj_step(model, data)
-            if grasp_mode == "kinematic_attachment" and attached:
-                set_cube_pose(data, cube_qadr, data.site_xpos[site_id] + np.array([0.0, 0.0, -0.095]))
-                mujoco.mj_forward(model, data)
             touching_fingers = cube_finger_contacts(data, cube_geom, finger_geoms)
             accumulate_contact_metrics(model, data, cube_geom, finger_geoms, contact_force_metrics)
             if touching_fingers:
@@ -193,7 +177,7 @@ def run_rollout(
     place_error = float(np.linalg.norm(final_cube - target_cube))
     physical_success = bilateral_contact_steps > 0 and lift_height >= 0.10 and place_error <= 0.12
     summary = {
-        "mode": "scripted_ik_physical_contact" if grasp_mode == "physical" else "scripted_ik_with_cube_attachment",
+        "mode": "scripted_ik_physical_contact",
         "steps": step_index,
         "samples": len(trajectory),
         "sim_time": float(data.time),
@@ -210,22 +194,18 @@ def run_rollout(
         "phase_contacts": phase_contacts,
         "gripper_qpos_range": gripper_qpos_range,
         "contact_force_metrics": contact_force_metrics,
-        "physical_success": physical_success if grasp_mode == "physical" else None,
+        "physical_success": physical_success,
         "elapsed_ms": round((time.time() - started) * 1000),
     }
     report = {
         "schema": "real2sim.rm65_pick_place_rollout_report.v1",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "ok": physical_success if grasp_mode == "physical" else True,
+        "ok": physical_success,
         "runtime": "mujoco",
         "scene": str(sim_path),
         "summary": summary,
         "phases": [phase for phase, *_ in phases],
-        "note": (
-            "Scripted IK with contact-physics grasp; the cube pose is never overwritten. This is not a learned policy."
-            if grasp_mode == "physical"
-            else "Diagnostic-only rollout. Cube follows the gripper during grasp/lift/place; this is not a learned policy."
-        ),
+        "note": "Scripted IK with contact-physics grasp; the cube pose is never overwritten. This is not a learned policy.",
     }
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     artifact_paths["report"] = str(report_path)
@@ -282,12 +262,6 @@ def solve_ik(model: Any, data: Any, site_id: int, target: np.ndarray, qpos_adrs:
     data.qpos[:] = q_backup
     mujoco.mj_forward(model, data)
     return q
-
-
-def set_cube_pose(data: Any, qadr: int, pos: np.ndarray) -> None:
-    data.qpos[qadr : qadr + 3] = pos
-    data.qpos[qadr + 3 : qadr + 7] = np.array([1.0, 0.0, 0.0, 0.0])
-    data.qvel[qadr : qadr + 6] = 0
 
 
 def sample_state(model: Any, data: Any, phase: str, step: int, site_id: int, cube_qadr: int) -> dict[str, Any]:

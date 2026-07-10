@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Real2Sim scene, collection, training, and inference management platform"
 requires-python = ">=3.10"
 dependencies = [
+  "argon2-cffi>=23.1",
+  "bce-python-sdk>=0.9.29",
   "fastapi>=0.110",
   "huggingface_hub>=0.24",
   "imageio>=2.34",
@@ -22,6 +24,8 @@ dependencies = [
 
 [project.scripts]
 real2sim-platform = "real2sim_platform.server:main"
+real2sim-worker = "real2sim_platform.worker_main:main"
+real2sim-runtime-gate = "real2sim_platform.runtime_gate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -36,3 +40,6 @@ where = ["src"]
   "static/vendor/three/addons/postprocessing/*",
   "static/vendor/three/addons/utils/*",
 ]
+
+[tool.pytest.ini_options]
+markers = ["integration: exercises installed real runtimes and physical scene assets"]

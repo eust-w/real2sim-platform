@@ -1,0 +1,11 @@
+.git
+.venv
+.pytest_cache
+workspace
+acceptance_runs
+qa
+docs
+tests
+**/__pycache__
+**/*.pyc
+*.tgz

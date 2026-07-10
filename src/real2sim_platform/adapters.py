@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from functools import lru_cache
 import math
 import os
 import shutil
@@ -15,6 +17,7 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
 from .config import PlatformConfig
+from .storage import ALLOWED_AREAS, BosStorage, normalize_relative_path
 from .store import PlatformStore
 
 
@@ -61,16 +64,26 @@ def scan_dataset(path: Path) -> dict[str, Any]:
 
 
 def run_doctor(config: PlatformConfig) -> dict[str, Any]:
-    core_checks = [
-        "workspace_writable",
-        "expert_policy",
-        "training",
-        "inference",
-        "media_prepare_deps",
-        "ffmpeg",
-        "spark_bundle",
-        "three_bundle",
-    ]
+    core_checks = (
+        [
+            "workspace_writable",
+            "rm65_controller",
+            "discoverse_act",
+            "torch_cuda",
+            "act_import",
+            "media_prepare_deps",
+            "ffmpeg",
+            "colmap",
+            "gs_video_reconstruct",
+            "anysplat_pinned",
+            "mujoco_python",
+            "motrixsim_python",
+            "nvidia_smi",
+        ]
+        if config.production_mode
+        else ["workspace_writable", "expert_policy", "training", "inference", "media_prepare_deps", "ffmpeg", "spark_bundle", "three_bundle"]
+    )
+    act_root = config.discoverse_root / "policies" / "act"
     checks = {
         "workspace_writable": _is_writable(config.workspace_dir),
         "expert_policy": (config.expert_policy_root / "src/real2sim_expert/collect.py").is_file(),
@@ -91,9 +104,15 @@ def run_doctor(config: PlatformConfig) -> dict[str, Any]:
         "mujoco_python": _module_available("mujoco"),
         "service_process": os.getpid() > 0,
         "nvidia_smi": shutil.which("nvidia-smi") is not None,
+        "rm65_controller": Path(__file__).with_name("rm65_controller.py").is_file(),
+        "discoverse_act": _git_head(config.discoverse_root) == config.discoverse_commit and _git_head(act_root) == config.act_commit,
+        "torch_cuda": _torch_cuda_ready(),
+        "act_import": _act_runtime_import_ready(str(config.discoverse_root), config.discoverse_commit, config.act_commit),
+        "anysplat_pinned": _git_head(config.anysplat_root) == config.anysplat_commit and config.anysplat_python.exists(),
+        "motrixsim_python": _module_available("motrixsim"),
     }
     return {
-        "ok": all(checks[name] for name in core_checks),
+        "ok": all(bool(checks[name]) for name in core_checks),
         "core_checks": core_checks,
         "warnings": [
             name
@@ -108,6 +127,8 @@ def run_doctor(config: PlatformConfig) -> dict[str, Any]:
                 "cuda_home",
                 "colmap",
                 "nvidia_smi",
+                "torch_cuda",
+                "act_import",
                 "three_bundle",
             ]
             if not checks.get(name)
@@ -148,6 +169,8 @@ def execute_task(config: PlatformConfig, store: PlatformStore, task: dict[str, A
         return run_reconstruction_preflight(config, store, task, emit)
     if task_type == "hf_import":
         return run_hf_import(config, store, task, emit)
+    if task_type == "bos_import":
+        return run_bos_import(config, store, task, emit)
     if task_type == "simulator_validation":
         return run_simulator_validation(config, store, task, emit)
     if task_type == "expert_collection":
@@ -163,6 +186,42 @@ def execute_task(config: PlatformConfig, store: PlatformStore, task: dict[str, A
     if task_type == "scene_splat_optimize":
         return run_scene_splat_optimize(config, store, task, emit)
     raise ValueError(f"unknown task type: {task_type}")
+
+
+def sync_task_outputs(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    storage = BosStorage(config)
+    if not storage.configured:
+        if config.production_mode:
+            raise RuntimeError("生产任务产物无法持久化：BOS 尚未配置")
+        return result
+    _task_progress(store, task, 96, "持久化产物", "正在将任务报告和业务产物上传到 BOS")
+    run_dir = Path(task["run_dir"])
+    if run_dir.is_dir():
+        _upload_directory(storage, run_dir, area="runs", relative_root=task["id"])
+    resource_specs = [
+        ("dataset_id", "datasets", store.get_dataset),
+        ("scene_id", "scenes", store.get_scene),
+        ("model_id", "models", store.get_model),
+    ]
+    persisted: dict[str, Any] = {}
+    for result_key, area, getter in resource_specs:
+        entity_id = str(result.get(result_key) or "")
+        if not entity_id:
+            continue
+        entity = getter(entity_id)
+        path = Path(str(entity["path"]))
+        root = path if path.is_dir() else path.parent
+        if not root.is_dir():
+            raise FileNotFoundError(f"resource output directory not found: {root}")
+        _upload_directory(storage, root, area=area, relative_root=entity_id)
+        checksum = _directory_digest(root)
+        uri = storage.uri_for_key(storage.object_key(area, f"{entity_id}/"))
+        store.update_entity_storage(area, entity_id, storage_uri=uri, checksum=checksum, cache_state="local")
+        persisted[result_key] = {"storage_uri": uri, "checksum": checksum}
+    result = dict(result)
+    result["persistent_outputs"] = persisted
+    result["run_storage_uri"] = storage.uri_for_key(storage.object_key("runs", f"{task['id']}/"))
+    return result
 
 
 def _task_progress(store: PlatformStore, task: dict[str, Any] | str, progress: int, stage: str, message: str = "") -> None:
@@ -504,6 +563,66 @@ def run_hf_import(config: PlatformConfig, store: PlatformStore, task: dict[str, 
     return {"dataset_id": dataset["id"], "dataset_path": str(target), "manifest_path": str(manifest_path), "scan": scan}
 
 
+def run_bos_import(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
+    params = task["params"]
+    storage = BosStorage(config)
+    raw_prefix = normalize_relative_path(str(params.get("prefix") or ""))
+    prefix_parts = raw_prefix.split("/", 1)
+    area = prefix_parts[0] if prefix_parts[0] in ALLOWED_AREAS else "datasets"
+    relative_prefix = prefix_parts[1] if prefix_parts[0] in ALLOWED_AREAS and len(prefix_parts) > 1 else raw_prefix
+    _task_progress(store, task, 18, "读取 BOS", "正在列举授权前缀内的对象")
+    objects = storage.list_objects(area=area, relative_prefix=relative_prefix, max_keys=int(params.get("max_objects", 1000)))
+    objects = [item for item in objects if not item["key"].endswith("/")]
+    if not objects:
+        raise ValueError("BOS 前缀中没有可导入对象")
+    dataset_id = uuid.uuid4().hex
+    out_dir = config.datasets_dir / dataset_id
+    out_dir.mkdir(parents=True, exist_ok=False)
+    common_prefix = storage.object_key(area, relative_prefix)
+    _task_progress(store, task, 30, "下载数据", f"正在下载 {len(objects)} 个真实 BOS 对象")
+    for index, item in enumerate(objects, start=1):
+        relative = item["key"][len(common_prefix):].lstrip("/") or Path(item["key"]).name
+        storage.download_file(item["storage_uri"], out_dir / relative)
+        if index % max(1, len(objects) // 10) == 0:
+            _task_progress(store, task, 30 + int(45 * index / len(objects)), "下载数据", f"已下载 {index}/{len(objects)} 个对象")
+    scan = scan_dataset(out_dir)
+    digest = _directory_digest(out_dir)
+    source_uri = f"bos://{storage.bucket}/{common_prefix}"
+    manifest = {
+        "schema": "real2sim.dataset_manifest.v2",
+        "id": dataset_id,
+        "name": params.get("name") or Path(relative_prefix.rstrip("/")).name,
+        "source_type": "bos_prefix",
+        "storage_uri": source_uri,
+        "checksum": digest,
+        "version": digest[:12],
+        "object_count": len(objects),
+        "objects": objects,
+        "scan": scan,
+    }
+    manifest_path = out_dir / "dataset_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    dataset = store.create_dataset(
+        item_id=dataset_id,
+        name=str(manifest["name"]),
+        path=out_dir,
+        scan=scan,
+        source_type="bos_prefix",
+        source_uri=source_uri,
+        version=digest[:12],
+        parent_task_id=task["id"],
+        manifest_path=manifest_path,
+        metrics={"object_count": len(objects), "size_bytes": sum(int(item["size_bytes"]) for item in objects)},
+        tags=["bos", "imported"],
+        storage_uri=source_uri,
+        checksum=digest,
+        cache_state="local",
+    )
+    _index_artifacts(store, task["id"], out_dir)
+    _task_progress(store, task, 95, "登记数据集", "BOS 数据及校验清单已登记")
+    return {"dataset_id": dataset["id"], "dataset_path": str(out_dir), "storage_uri": source_uri, "object_count": len(objects), "checksum": digest}
+
+
 def run_simulator_validation(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
     params = task["params"]
     run_dir = Path(task["run_dir"])
@@ -564,8 +683,50 @@ def run_expert_collection(config: PlatformConfig, store: PlatformStore, task: di
     run_dir = Path(task["run_dir"])
     scene_path = _scene_path(store, params) or config.expert_policy_root / "examples/retail_single_arm_scene.json"
     out_dir = run_dir / "dataset"
-    policy_preset = str(params.get("policy_preset") or "pick_and_place_v1")
-    if policy_preset != "pick_and_place_v1":
+    policy_preset = str(params.get("policy_preset") or ("rm65_pick_place_6d_ik" if config.production_mode else "pick_and_place_v1"))
+    if policy_preset == "rm65_pick_place_6d_ik":
+        scene_path = _resolve_rm65_runtime_scene(store, params, scene_path)
+        required_successes = int(params.get("episodes", 50))
+        max_attempts = int(params.get("max_attempts", max(required_successes * 3, required_successes)))
+        command = [
+            sys.executable,
+            "-m",
+            "real2sim_platform.rm65_controller",
+            "--scene",
+            str(scene_path),
+            "--out",
+            str(out_dir),
+            "--required-successes",
+            str(required_successes),
+            "--max-attempts",
+            str(max_attempts),
+            "--steps",
+            str(int(params.get("steps", 200))),
+            "--seed",
+            str(int(params.get("seed", 7))),
+            "--width",
+            str(int(params.get("image_width", 320))),
+            "--height",
+            str(int(params.get("image_height", 240))),
+        ]
+        _task_progress(store, task, 28, "物理采集", "RM65 正在通过 6D IK、双指接触和真实物理步进采集成功 episode")
+        run_logged(command, cwd=config.app_root, log_path=run_dir / "logs" / "task.log", env=_env_with_paths(config, [config.app_root / "src"]), store=store, task_id=task["id"])
+        manifest = _read_json(out_dir / "manifest.json")
+        dataset = store.create_dataset(
+            name=params.get("name", f"RM65 ACT dataset {task['id'][:8]}"),
+            path=out_dir,
+            scan={"input_kind": "discoverse_act_hdf5", "samples": manifest.get("successful_episodes"), "manifest": str(out_dir / "manifest.json")},
+            source_type="expert_collection",
+            source_uri=str(scene_path),
+            parent_task_id=task["id"],
+            manifest_path=out_dir / "manifest.json",
+            metrics={"samples": manifest.get("successful_episodes"), "success_rate": manifest.get("success_rate"), "policy_preset": policy_preset},
+            tags=["discoverse_act_hdf5", "rm65", "physical_contact", policy_preset],
+        )
+        _index_artifacts(store, task["id"], out_dir)
+        _task_progress(store, task, 95, "登记数据集", "真实采集 HDF5、接触记录和成功报告已登记")
+        return {"dataset_id": dataset["id"], "dataset_path": str(out_dir), "samples": manifest.get("successful_episodes"), "success_rate": manifest.get("success_rate")}
+    if policy_preset != "pick_and_place_v1" or config.production_mode:
         raise ValueError(f"unsupported expert policy preset: {policy_preset}")
     _task_progress(store, task, 18, "准备采集", "正在加载场景、专家策略和机器人配置")
     command = [
@@ -615,7 +776,9 @@ def run_training(config: PlatformConfig, store: PlatformStore, task: dict[str, A
     _task_progress(store, task, 18, "准备训练", "正在加载训练数据集和训练配方")
     dataset_path = _dataset_path(store, params)
     out_dir = run_dir / "model"
-    recipe = str(params.get("recipe") or "bc_v2")
+    recipe = str(params.get("recipe") or ("discoverse_act" if config.production_mode else "bc_v2"))
+    if recipe == "discoverse_act":
+        return _run_discoverse_act_training(config, store, task, dataset_path, out_dir)
     recipe_config = {
         "bc_v2": {"regularization": 1e-3, "base_model": "facebook/dinov2-small"},
         "bc_fast": {"regularization": 1e-2, "base_model": "facebook/dinov2-small"},
@@ -673,6 +836,44 @@ def run_inference(config: PlatformConfig, store: PlatformStore, task: dict[str, 
     scene_path = _scene_path(store, params) or config.expert_policy_root / "examples/retail_single_arm_scene.json"
     model_path = _model_path(store, params)
     out_dir = run_dir / "inference"
+    model = store.get_model(str(params["model_id"])) if params.get("model_id") else None
+    model_recipe = str(((model or {}).get("metadata") or {}).get("training", {}).get("recipe") or params.get("recipe") or "")
+    if model_recipe == "discoverse_act":
+        scene_path = _resolve_rm65_runtime_scene(store, params, scene_path)
+        act_root = config.discoverse_root / "policies" / "act"
+        if _git_head(act_root) != config.act_commit:
+            raise RuntimeError(f"DISCOVERSE ACT commit mismatch; required {config.act_commit}")
+        command = [
+            sys.executable,
+            "-m",
+            "real2sim_platform.act_inference",
+            "--scene",
+            str(scene_path),
+            "--model",
+            str(model_path),
+            "--act-root",
+            str(act_root),
+            "--out",
+            str(out_dir),
+            "--episodes",
+            str(int(params.get("episodes", 10))),
+            "--steps",
+            str(int(params.get("steps", 200))),
+            "--seed",
+            str(int(params.get("seed", 11))),
+            "--minimum-success-rate",
+            str(float(params.get("minimum_success_rate", 0.5))),
+        ]
+        _task_progress(store, task, 38, "ACT 在线推理", "DISCOVERSE ACT 正在真实 MuJoCo 场景中闭环控制 RM65")
+        run_logged(command, cwd=config.app_root, log_path=run_dir / "logs" / "task.log", env=_env_with_paths(config, [config.app_root / "src", act_root, config.discoverse_root]), store=store, task_id=task["id"])
+        report = _read_json(out_dir / "inference_report.json")
+        if not report.get("actions_nonconstant"):
+            raise RuntimeError("ACT 推理动作是常量，拒绝登记为有效推理")
+        _index_artifacts(store, task["id"], out_dir)
+        _task_progress(store, task, 95, "索引推理产物", "真实 rollout 视频、轨迹和成功率报告已登记")
+        return {"episodes": len(report.get("episodes", [])), "success_rate": report.get("success_rate"), "report": str(out_dir / "inference_report.json")}
+    if config.production_mode:
+        raise ValueError("生产模式只允许 DISCOVERSE ACT 模型在线推理")
     command = [
         sys.executable,
         "-m",
@@ -693,6 +894,97 @@ def run_inference(config: PlatformConfig, store: PlatformStore, task: dict[str, 
     _index_artifacts(store, task["id"], out_dir)
     _task_progress(store, task, 95, "索引产物", "推理轨迹和 viewer 已登记")
     return {"rollout_steps": len(output.get("rollout", [])), "viewer": str(out_dir / "viewer.html")}
+
+
+def _run_discoverse_act_training(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], dataset_path: Path, out_dir: Path) -> dict[str, Any]:
+    params = task["params"]
+    run_dir = Path(task["run_dir"])
+    act_root = config.discoverse_root / "policies" / "act"
+    if _git_head(act_root) != config.act_commit:
+        raise RuntimeError(f"DISCOVERSE ACT commit mismatch; required {config.act_commit}")
+    dataset_info = _inspect_act_dataset(dataset_path)
+    if dataset_info["episode_count"] < 2:
+        raise ValueError("DISCOVERSE ACT 至少需要 2 个真实 HDF5 episode")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    config_root = run_dir / "generated_config"
+    task_name = f"real2sim_{task['id'][:12]}"
+    config_path = config_root / "configurations" / "task_configs" / f"{task_name}.py"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    epochs = int(params.get("epochs", 100))
+    validate_every = max(1, min(int(params.get("validate_every", max(1, epochs // 5))), epochs))
+    save_every = max(1, min(int(params.get("save_every", validate_every)), epochs))
+    batch_size = max(1, min(int(params.get("batch_size", 8)), dataset_info["episode_count"] - 1))
+    chunk_size = max(2, min(int(params.get("chunk_size", 32)), dataset_info["episode_length"]))
+    core_dir = out_dir / "core"
+    checkpoint_dir = out_dir / "checkpoints"
+    config_path.write_text(
+        _act_task_config_source(
+            task_name=task_name,
+            dataset_path=dataset_path,
+            checkpoint_dir=checkpoint_dir,
+            stats_path=core_dir / "dataset_stats.pkl",
+            camera_names=dataset_info["camera_names"],
+            state_dim=dataset_info["state_dim"],
+            action_dim=dataset_info["action_dim"],
+            epochs=epochs,
+            batch_size=batch_size,
+            chunk_size=chunk_size,
+            validate_every=validate_every,
+            save_every=save_every,
+        ),
+        encoding="utf-8",
+    )
+    command = [sys.executable, "policy_train.py", "-tn", task_name, "-ne", str(epochs), "-ve", str(validate_every), "-se", str(save_every), "--seed", str(int(params.get("seed", 1)))]
+    env = _env_with_paths(config, [config_root, act_root, config.discoverse_root])
+    env["MPLBACKEND"] = "Agg"
+    _task_progress(store, task, 34, "ACT 训练", f"正在使用 {dataset_info['episode_count']} 个真实 episode 训练 DISCOVERSE ACT")
+    run_logged(command, cwd=act_root, log_path=run_dir / "logs" / "task.log", env=env, store=store, task_id=task["id"])
+    checkpoint = core_dir / "policy_best.ckpt"
+    stats_path = core_dir / "dataset_stats.pkl"
+    if not checkpoint.is_file() or checkpoint.stat().st_size == 0 or not stats_path.is_file():
+        raise RuntimeError("DISCOVERSE ACT 训练结束但未生成非空 policy_best.ckpt 或 dataset_stats.pkl")
+    description = (core_dir / "description.txt").read_text(encoding="utf-8").strip() if (core_dir / "description.txt").is_file() else ""
+    best_loss = _parse_best_loss(description)
+    if best_loss is None or not math.isfinite(best_loss):
+        raise RuntimeError("ACT 训练指标不是有限数值")
+    model_card = {
+        "schema": "real2sim.model_card.v2",
+        "name": params.get("name", f"RM65 ACT {task['id'][:8]}"),
+        "framework": "DISCOVERSE ACT",
+        "training": {
+            "recipe": "discoverse_act",
+            "discoverse_commit": config.discoverse_commit,
+            "act_commit": config.act_commit,
+            "dataset_path": str(dataset_path),
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "chunk_size": chunk_size,
+            "camera_names": dataset_info["camera_names"],
+            "state_dim": dataset_info["state_dim"],
+            "action_dim": dataset_info["action_dim"],
+            "config_path": str(config_path),
+        },
+        "metrics": {"best_validation_loss": best_loss},
+        "artifacts": {"checkpoint": str(checkpoint), "dataset_stats": str(stats_path)},
+        "description": description,
+    }
+    card_path = out_dir / "model_card.json"
+    card_path.write_text(json.dumps(model_card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    shutil.copy2(config_path, out_dir / "task_config.py")
+    model = store.create_model(
+        name=str(model_card["name"]),
+        path=out_dir,
+        metadata=model_card,
+        source_type="training",
+        source_uri=str(dataset_path),
+        parent_task_id=task["id"],
+        manifest_path=card_path,
+        metrics=model_card["metrics"],
+        tags=["policy", "discoverse_act", "rm65"],
+    )
+    _index_artifacts(store, task["id"], out_dir)
+    _task_progress(store, task, 95, "索引 ACT 模型", "checkpoint、损失曲线、模型卡和数据血缘已登记")
+    return {"model_id": model["id"], "model_path": str(out_dir), "metrics": model_card["metrics"], "checkpoint": str(checkpoint)}
 
 
 def run_renderer_benchmark(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
@@ -1550,12 +1842,182 @@ def _scene_path(store: PlatformStore, params: dict[str, Any]) -> Path | None:
     return None
 
 
+def _resolve_rm65_runtime_scene(store: PlatformStore, params: dict[str, Any], fallback: Path) -> Path:
+    candidates: list[Path] = []
+    if fallback.suffix.lower() == ".xml":
+        candidates.append(fallback)
+    if params.get("scene_id"):
+        scene = store.get_scene(str(params["scene_id"]))
+        metadata = scene.get("metadata") or {}
+        package = Path(str(metadata.get("package") or ""))
+        manifest_path = Path(str(scene.get("manifest_path") or ""))
+        manifest = _read_optional_json(manifest_path)
+        for asset in manifest.get("assets", []) if isinstance(manifest.get("assets"), list) else []:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or asset.get("path") or "").lower()
+            if "rm65" in name and name.endswith(".xml"):
+                candidates.append(Path(str(asset.get("path") or "")))
+        if str(package):
+            candidates.extend([
+                package / "simulator_assets" / "rm65_table_pick_place.xml",
+                package / "scene_mujoco.xml",
+                package / "mjcf" / "scene.xml",
+            ])
+    candidates.extend([fallback.parent / "simulator_assets" / "rm65_table_pick_place.xml", fallback.parent / "scene_mujoco.xml"])
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("所选场景没有可执行的 RM65 pick-place MJCF；请先在场景管理中绑定 RM65 控制器和碰撞资产")
+
+
 def _model_path(store: PlatformStore, params: dict[str, Any]) -> Path:
     if params.get("model_path"):
         return Path(str(params["model_path"]))
     if params.get("model_id"):
         return Path(store.get_model(str(params["model_id"]))["path"])
     raise ValueError("inference requires model_id or model_path")
+
+
+def _directory_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        with path.open("rb") as handle:
+            while chunk := handle.read(8 * 1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _upload_directory(storage: BosStorage, root: Path, *, area: str, relative_root: str) -> None:
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        storage.upload_file(
+            path,
+            area=area,
+            relative_path=f"{relative_root}/{path.relative_to(root).as_posix()}",
+            metadata={"sha256": _file_sha256(path)},
+        )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_head(root: Path) -> str:
+    try:
+        return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
+    except Exception:
+        return ""
+
+
+def _inspect_act_dataset(dataset_path: Path) -> dict[str, Any]:
+    try:
+        import h5py
+    except ImportError as exc:
+        raise RuntimeError("DISCOVERSE ACT training requires h5py") from exc
+    episodes = sorted(dataset_path.glob("episode_*.hdf5"))
+    if not episodes:
+        raise ValueError("训练数据目录中没有 episode_*.hdf5")
+    lengths: list[int] = []
+    cameras: list[str] = []
+    state_dim = 0
+    action_dim = 0
+    for path in episodes:
+        with h5py.File(path, "r") as root:
+            if "/observations/qpos" not in root or "/action" not in root or "/observations/images" not in root:
+                raise ValueError(f"ACT HDF5 缺少 qpos/action/images: {path.name}")
+            current_cameras = sorted(str(name) for name in root["/observations/images"].keys())
+            current_state_dim = int(root["/observations/qpos"].shape[1])
+            current_action_dim = int(root["/action"].shape[1])
+            if not cameras:
+                cameras = current_cameras
+                state_dim = current_state_dim
+                action_dim = current_action_dim
+            if current_cameras != cameras or current_state_dim != state_dim or current_action_dim != action_dim:
+                raise ValueError("ACT 数据集的相机、状态维度或动作维度不一致")
+            length = int(root["/action"].shape[0])
+            if length < 2:
+                raise ValueError(f"ACT episode 过短: {path.name}")
+            lengths.append(length)
+    return {
+        "episode_count": len(episodes),
+        "episode_length": min(lengths),
+        "camera_names": cameras,
+        "state_dim": state_dim,
+        "action_dim": action_dim,
+    }
+
+
+def _act_task_config_source(
+    *,
+    task_name: str,
+    dataset_path: Path,
+    checkpoint_dir: Path,
+    stats_path: Path,
+    camera_names: list[str],
+    state_dim: int,
+    action_dim: int,
+    epochs: int,
+    batch_size: int,
+    chunk_size: int,
+    validate_every: int,
+    save_every: int,
+) -> str:
+    return f'''from configurations.task_configs.template import TASK_CONFIG_DEFAULT, activator, set_paths
+
+
+def policy_maker(config: dict, stage=None):
+    from policies.act.act import ACTPolicy
+    from policies.common.maker import post_init_policies
+    policy = ACTPolicy(config)
+    post_init_policies([policy], stage, [config["ckpt_path"]])
+    return policy
+
+
+@activator(False)
+def augment_images(image):
+    return image
+
+
+set_paths({str(dataset_path)!r}, {str(checkpoint_dir)!r}, {str(stats_path)!r})
+TASK_CONFIG_DEFAULT["common"]["camera_names"] = {camera_names!r}
+TASK_CONFIG_DEFAULT["common"]["state_dim"] = {state_dim}
+TASK_CONFIG_DEFAULT["common"]["action_dim"] = {action_dim}
+TASK_CONFIG_DEFAULT["common"]["policy_config"]["policy_maker"] = policy_maker
+TASK_CONFIG_DEFAULT["common"]["policy_config"]["temporal_agg"] = True
+TASK_CONFIG_DEFAULT["common"]["policy_config"]["chunk_size"] = {chunk_size}
+TASK_CONFIG_DEFAULT["common"]["policy_config"]["num_queries"] = {chunk_size}
+TASK_CONFIG_DEFAULT["train"]["load_data"]["data_type"] = "hdf5"
+TASK_CONFIG_DEFAULT["train"]["load_data"]["num_episodes"] = "ALL"
+TASK_CONFIG_DEFAULT["train"]["load_data"]["batch_size_train"] = {batch_size}
+TASK_CONFIG_DEFAULT["train"]["load_data"]["batch_size_validate"] = {batch_size}
+TASK_CONFIG_DEFAULT["train"]["load_data"]["num_workers_train"] = 2
+TASK_CONFIG_DEFAULT["train"]["load_data"]["num_workers_validate"] = 2
+TASK_CONFIG_DEFAULT["train"]["load_data"]["observation_slice"] = None
+TASK_CONFIG_DEFAULT["train"]["load_data"]["action_slice"] = None
+TASK_CONFIG_DEFAULT["train"]["num_epochs"] = {epochs}
+TASK_CONFIG_DEFAULT["train"]["validate_every"] = {validate_every}
+TASK_CONFIG_DEFAULT["train"]["save_every"] = {save_every}
+TASK_CONFIG_DEFAULT["train"]["eval_every"] = 0
+TASK_CONFIG = TASK_CONFIG_DEFAULT
+'''
+
+
+def _parse_best_loss(description: str) -> float | None:
+    import re
+
+    match = re.search(r"val loss\s+([0-9.eE+-]+)", description)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
 
 
 def _write_dry_run_scene(package_dir: Path, input_path: Path, renderer: str, simulators: list[str]) -> Path:
@@ -2463,6 +2925,40 @@ def _module_available(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
         return False
+
+
+@lru_cache(maxsize=1)
+def _torch_cuda_ready() -> bool:
+    if not _module_available("torch"):
+        return False
+    completed = subprocess.run(
+        [sys.executable, "-c", "import torch; raise SystemExit(0 if torch.cuda.is_available() else 2)"],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+@lru_cache(maxsize=4)
+def _act_runtime_import_ready(discoverse_root_value: str, discoverse_commit: str, act_commit: str) -> bool:
+    discoverse_root = Path(discoverse_root_value)
+    act_root = discoverse_root / "policies" / "act"
+    if _git_head(discoverse_root) != discoverse_commit or _git_head(act_root) != act_commit or not _torch_cuda_ready():
+        return False
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join([str(act_root), str(discoverse_root), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    completed = subprocess.run(
+        [sys.executable, "-c", "from policy import ACTPolicy; assert ACTPolicy is not None"],
+        cwd=act_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=45,
+        check=False,
+    )
+    return completed.returncode == 0
 
 
 def _is_writable(path: Path) -> bool:

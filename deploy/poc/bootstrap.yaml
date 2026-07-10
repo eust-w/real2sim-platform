@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: real2sim-poc-local-pv
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  capacity:
+    storage: 150Gi
+  volumeMode: Filesystem
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: real2sim-poc-local
+  local:
+    path: /var/lib/real2sim-poc
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["192.168.80.136"]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: real2sim-poc-data
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: real2sim-poc-local
+  volumeName: real2sim-poc-local-pv
+  resources:
+    requests:
+      storage: 150Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: real2sim-poc-quota
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  hard:
+    pods: "12"
+    services: "6"
+    services.loadbalancers: "1"
+    requests.cpu: "40"
+    limits.cpu: "64"
+    requests.memory: 128Gi
+    limits.memory: 192Gi
+    requests.storage: 150Gi
+    requests.nvidia.com/gpu: "1"
+    limits.nvidia.com/gpu: "1"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: real2sim-poc-limits
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: "2"
+        memory: 4Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: real2sim-poc
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+automountServiceAccountToken: false
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-policy
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: real2sim-frontend
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8443}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: real2sim-api
+      ports:
+        - {protocol: TCP, port: 18126}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-policy
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: real2sim-api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: real2sim-frontend
+      ports:
+        - {protocol: TCP, port: 18126}
+  egress:
+    - ports:
+        - {protocol: TCP, port: 443}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-policy
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: real2sim-worker
+  policyTypes: [Ingress, Egress]
+  egress:
+    - ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 80}

@@ -5,10 +5,43 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Real2Sim</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/styles.css?v=20260710-motrix-runtime-v7">
+  <link rel="stylesheet" href="/static/styles.css?v=20260710-poc-product-v1">
 </head>
 <body>
-  <div class="app-shell">
+  <section id="authShell" class="auth-shell" aria-label="登录 Real2Sim">
+    <div class="auth-brand">
+      <strong>Real2Sim</strong>
+      <span>机器人从真实场景走向可训练智能体</span>
+      <div class="auth-flow" aria-hidden="true">
+        <i class="done"></i><b></b><i></i><b></b><i></i>
+      </div>
+      <p>数据、场景、采集、训练与推理使用同一条可追踪链路。</p>
+    </div>
+    <form id="loginForm" class="auth-card">
+      <div>
+        <h1>登录平台</h1>
+        <p>使用管理员分配的账号进入工作台</p>
+      </div>
+      <label>用户名<input id="loginUsername" autocomplete="username" required></label>
+      <label>密码<input id="loginPassword" type="password" autocomplete="current-password" required></label>
+      <p id="loginError" class="form-error" role="alert"></p>
+      <button class="primary-button" type="submit">登录</button>
+    </form>
+    <form id="passwordForm" class="auth-card" hidden>
+      <div>
+        <h1>设置新密码</h1>
+        <p>首次登录需要完成密码更新</p>
+      </div>
+      <label>当前密码<input id="currentPassword" type="password" autocomplete="current-password" required></label>
+      <label>新密码<input id="newPassword" type="password" autocomplete="new-password" minlength="12" required></label>
+      <label>确认新密码<input id="confirmPassword" type="password" autocomplete="new-password" minlength="12" required></label>
+      <p class="password-hint">至少 12 位，并包含大小写字母、数字或符号中的三类。</p>
+      <p id="passwordError" class="form-error" role="alert"></p>
+      <button class="primary-button" type="submit">保存并重新登录</button>
+    </form>
+  </section>
+
+  <div id="appShell" class="app-shell" hidden>
     <aside class="sidebar">
       <div class="brand">
         <strong>Real2Sim</strong>
@@ -23,6 +56,11 @@
         <button class="tab" data-tab="train">模型训练</button>
         <button class="tab" data-tab="infer">在线推理</button>
       </nav>
+      <div class="sidebar-actions">
+        <button id="openUsers" hidden>用户管理</button>
+        <button id="logoutButton">退出登录</button>
+        <span id="currentUserLabel"></span>
+      </div>
     </aside>
 
     <main class="main-surface">
@@ -106,9 +144,9 @@
             <strong>上传文件</strong>
             <span>zip、视频或图片包</span>
           </button>
-          <button class="source-card" data-open-import="local">
-            <strong>本地目录</strong>
-            <span>从配置白名单导入已有数据</span>
+          <button class="source-card" data-open-import="bos">
+            <strong>BOS 存储</strong>
+            <span>从授权的 Real2Sim 前缀导入</span>
           </button>
         </div>
 
@@ -228,7 +266,6 @@
                 <label class="check"><input id="replaceSceneWithPoseTrain" type="checkbox" checked> 用训练结果替换主场景</label>
                 <label class="check"><input id="exportTextures" type="checkbox" checked> 生成纹理资产</label>
                 <label class="check"><input id="keepIntermediate" type="checkbox" checked> 保留中间产物</label>
-                <label class="check muted-check"><input id="dryRunScene" type="checkbox"> 仅生成样例</label>
               </div>
             </details>
 
@@ -362,10 +399,10 @@
             </div>
             <div class="form-grid">
               <label class="span-2">选择场景<select id="collectScene"></select></label>
-              <label>专家策略<select id="policyPreset"><option value="pick_and_place_v1">抓取放置策略</option><option value="navigation_v1" disabled>导航采集策略（待接入）</option><option value="manipulation_v2" disabled>精细操作策略（待接入）</option></select></label>
+              <label>专家控制器<select id="policyPreset"><option value="">正在读取可用控制器</option></select></label>
               <label>执行并发<input id="collectWorkers" type="number" min="1" max="1" value="1" disabled title="当前专家采集执行器仅支持单 worker"></label>
-              <label>Episode 数<input id="episodes" type="number" value="4"></label>
-              <label>每个 Episode 步数<input id="steps" type="number" value="24"></label>
+              <label>成功 Episode 数<input id="episodes" type="number" min="1" value="50"></label>
+              <label>每个 Episode 步数<input id="steps" type="number" min="80" value="240"></label>
             </div>
           </section>
 
@@ -417,7 +454,7 @@
             </div>
             <div class="form-grid">
               <label class="span-2">训练数据集<select id="trainDataset"></select></label>
-              <label>训练配方<select id="trainRecipe"><option value="bc_v2">行为克隆 v2</option><option value="bc_fast">快速验证</option><option value="diffusion_policy" disabled>扩散策略（待接入）</option></select></label>
+              <label>训练配方<select id="trainRecipe"><option value="">正在读取可用配方</option></select></label>
               <label>Epoch 数<input id="epochs" type="number" value="100"></label>
             </div>
           </section>
@@ -488,7 +525,8 @@
           <div class="form-grid">
             <label>选择模型<select id="inferModel"></select></label>
             <label>选择场景<select id="inferScene"></select></label>
-            <label>步数上限<input id="inferSteps" type="number" min="1" value="80"></label>
+            <label>推理 Episode 数<input id="inferEpisodes" type="number" min="1" value="10"></label>
+            <label>步数上限<input id="inferSteps" type="number" min="80" value="240"></label>
             <label>执行并发<input id="inferWorkers" type="number" min="1" max="1" value="1" disabled title="当前推理执行器仅支持单 worker"></label>
           </div>
         </section>
@@ -580,7 +618,23 @@
     </form>
   </dialog>
 
+  <dialog id="usersDialog">
+    <div class="dialog-card">
+      <div class="panel-head">
+        <div><h2>用户管理</h2><p>创建、禁用和重置团队账号</p></div>
+        <button type="button" data-close-dialog="usersDialog" class="ghost-button">关闭</button>
+      </div>
+      <form id="createUserForm" class="form-grid user-form">
+        <label>用户名<input id="newUsername" required></label>
+        <label>角色<select id="newUserRole"><option value="engineer">工程师</option><option value="viewer">只读用户</option><option value="admin">管理员</option></select></label>
+        <label class="span-2">初始密码<input id="newUserPassword" type="password" minlength="12" required></label>
+        <button class="primary-button span-2" type="submit">创建用户</button>
+      </form>
+      <div id="userList" class="user-list"></div>
+    </div>
+  </dialog>
+
   <div id="toast" class="toast" role="status"></div>
-  <script src="/static/app.js?v=20260710-motrix-runtime-v7"></script>
+  <script src="/static/app.js?v=20260710-poc-product-v1"></script>
 </body>
 </html>

@@ -1,0 +1,324 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: real2sim-runtime-config
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+data:
+  config.toml: |
+    app_root = "/app"
+    workspace_dir = "/var/lib/real2sim-poc/workspace"
+    host = "0.0.0.0"
+    port = 18126
+    default_renderer = "spark"
+    real2sim2model_root = "/app"
+    expert_policy_root = "/app"
+    training_root = "/app"
+    inference_root = "/app"
+    discoverse_root = "/opt/DISCOVERSE"
+    gs_playground_root = "/opt/gs_playground"
+    images23dgs_root = "/opt/images23dgs"
+    colmap_binary = "/usr/bin/colmap"
+    gsplat_python = "/opt/real2sim_paper_runtime/envs/anysplat/bin/python"
+    runtime_root = "/opt/real2sim_paper_runtime"
+    anysplat_root = "/opt/real2sim_paper_runtime/AnySplat"
+    anysplat_python = "/opt/real2sim_paper_runtime/envs/anysplat/bin/python"
+    cuda_home = "/usr/local/cuda"
+    runtime_env_script = "/opt/gs_playground/scripts/real2sim_wuying_paper_env.sh"
+    allowed_path_roots = "/var/lib/real2sim-poc:/opt/DISCOVERSE:/opt/gs_playground:/opt/motrixsim-docs:/opt/real2sim_paper_runtime:/tmp"
+    production_mode = true
+    auth_enabled = true
+    secure_cookies = true
+    session_ttl_seconds = 43200
+    discoverse_commit = "d67f47c084aba0e0cf422a8725235f8b9238655a"
+    act_commit = "f8ab39c8d829d85571ab6d0250412ba4d0698fa0"
+    anysplat_commit = "5f5e208a7dd57d52e43ea0d553a95eab526e8775"
+    anysplat_model_revision = "d2e8c343672646041ad4ea518184968f94362f01"
+    vggt_model_revision = "860abec7937da0a4c03c41d3c269c366e82abdf9"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: real2sim-api
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/name: real2sim-api
+    app.kubernetes.io/part-of: real2sim-poc
+    app.kubernetes.io/version: "__BUILD_ID__"
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: real2sim-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: real2sim-api
+        app.kubernetes.io/part-of: real2sim-poc
+        app.kubernetes.io/version: "__BUILD_ID__"
+    spec:
+      serviceAccountName: real2sim-poc
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: "192.168.80.136"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      imagePullSecrets:
+        - name: real2sim-registry
+      containers:
+        - name: api
+          image: __API_IMAGE__
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: REAL2SIM_PLATFORM_CONFIG, value: /etc/real2sim/config.toml}
+            - {name: REAL2SIM_WORKER_MODE, value: api}
+            - {name: REAL2SIM_WORKER_ID, value: real2sim-worker-a800}
+            - {name: REAL2SIM_PRODUCTION_MODE, value: "1"}
+            - {name: REAL2SIM_AUTH_ENABLED, value: "1"}
+            - {name: REAL2SIM_SECURE_COOKIES, value: "1"}
+            - {name: REAL2SIM_BOS_PREFIX, value: real2sim-poc}
+            - {name: BOS_BUCKET, value: testxyz}
+            - {name: BOS_ENDPOINT, value: https://bj.bcebos.com}
+            - name: BOS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: real2sim-bos, key: accessKeyId}}
+            - name: BOS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: real2sim-bos, key: secretAccessKey}}
+            - name: REAL2SIM_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: real2sim-app-secrets, key: bootstrap-admin-password}}
+          ports:
+            - {name: http, containerPort: 18126}
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "4", memory: 8Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/real2sim-poc}
+            - {name: config, mountPath: /etc/real2sim/config.toml, subPath: config.toml, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: real2sim-poc-data}
+        - name: config
+          configMap: {name: real2sim-runtime-config}
+        - name: tmp
+          emptyDir: {sizeLimit: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: real2sim-api
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/name: real2sim-api
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  selector:
+    app.kubernetes.io/name: real2sim-api
+  ports:
+    - {name: http, port: 18126, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: real2sim-worker
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/name: real2sim-worker
+    app.kubernetes.io/part-of: real2sim-poc
+    app.kubernetes.io/version: "__BUILD_ID__"
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: real2sim-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: real2sim-worker
+        app.kubernetes.io/part-of: real2sim-poc
+        app.kubernetes.io/version: "__BUILD_ID__"
+    spec:
+      serviceAccountName: real2sim-poc
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: "192.168.80.136"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      imagePullSecrets:
+        - name: real2sim-registry
+      initContainers:
+        - name: runtime-gate
+          image: __WORKER_IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: [real2sim-runtime-gate, --mode, bootstrap]
+          env: &worker-env
+            - {name: REAL2SIM_PLATFORM_CONFIG, value: /etc/real2sim/config.toml}
+            - {name: REAL2SIM_WORKER_MODE, value: worker}
+            - {name: REAL2SIM_WORKER_ID, value: real2sim-worker-a800}
+            - {name: REAL2SIM_PRODUCTION_MODE, value: "1"}
+            - {name: REAL2SIM_BOS_PREFIX, value: real2sim-poc}
+            - {name: REAL2SIM_RUNTIME_GATE_DIR, value: /var/lib/real2sim-poc/cache/runtime-gate}
+            - {name: HF_HOME, value: /var/lib/real2sim-poc/cache/huggingface}
+            - {name: HF_HUB_DISABLE_XET, value: "1"}
+            - {name: BOS_BUCKET, value: testxyz}
+            - {name: BOS_ENDPOINT, value: https://bj.bcebos.com}
+            - name: BOS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: real2sim-bos, key: accessKeyId}}
+            - name: BOS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: real2sim-bos, key: secretAccessKey}}
+          resources:
+            requests: {cpu: "6", memory: 32Gi, nvidia.com/gpu: "1"}
+            limits: {cpu: "24", memory: 96Gi, nvidia.com/gpu: "1"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts: &worker-mounts
+            - {name: data, mountPath: /var/lib/real2sim-poc}
+            - {name: config, mountPath: /etc/real2sim/config.toml, subPath: config.toml, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: shm, mountPath: /dev/shm}
+      containers:
+        - name: worker
+          image: __WORKER_IMAGE__
+          imagePullPolicy: IfNotPresent
+          env: *worker-env
+          resources:
+            requests: {cpu: "6", memory: 32Gi, nvidia.com/gpu: "1"}
+            limits: {cpu: "24", memory: 96Gi, nvidia.com/gpu: "1"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            exec: {command: [real2sim-runtime-gate, --mode, readiness]}
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          livenessProbe:
+            exec: {command: [real2sim-runtime-gate, --mode, readiness]}
+            initialDelaySeconds: 45
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 3
+          volumeMounts: *worker-mounts
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: real2sim-poc-data}
+        - name: config
+          configMap: {name: real2sim-runtime-config}
+        - name: tmp
+          emptyDir: {sizeLimit: 12Gi}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 12Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: real2sim-frontend
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/name: real2sim-frontend
+    app.kubernetes.io/part-of: real2sim-poc
+    app.kubernetes.io/version: "__BUILD_ID__"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: real2sim-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: real2sim-frontend
+        app.kubernetes.io/part-of: real2sim-poc
+        app.kubernetes.io/version: "__BUILD_ID__"
+    spec:
+      serviceAccountName: real2sim-poc
+      automountServiceAccountToken: false
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: ["192.168.80.249", "192.168.81.47"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: {type: RuntimeDefault}
+      imagePullSecrets:
+        - name: real2sim-registry
+      containers:
+        - name: frontend
+          image: __FRONTEND_IMAGE__
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: https, containerPort: 8443}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            tcpSocket: {port: https}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: https}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - {name: tls, mountPath: /etc/real2sim/tls, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: nginx-cache, mountPath: /var/cache/nginx}
+      volumes:
+        - name: tls
+          secret: {secretName: real2sim-tls}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        - name: nginx-cache
+          emptyDir: {sizeLimit: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: real2sim-frontend
+  namespace: real2sim-poc
+  labels:
+    app.kubernetes.io/name: real2sim-frontend
+    app.kubernetes.io/part-of: real2sim-poc
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: real2sim-frontend
+  ports:
+    - {name: http, port: 80, targetPort: http}
+    - {name: https, port: 443, targetPort: https}

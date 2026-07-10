@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+import concurrent.futures
+from pathlib import Path
+
+import h5py
+import pytest
+from fastapi.testclient import TestClient
+
+from real2sim_platform.config import PlatformConfig
+from real2sim_platform.rm65_controller import collect
+from real2sim_platform.server import create_app
+from real2sim_platform.storage import BosStorage, StorageBoundaryError, normalize_relative_path
+from real2sim_platform.store import PlatformStore
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_auth_first_login_rbac_and_user_crud(tmp_path: Path) -> None:
+    config = PlatformConfig(
+        app_root=ROOT,
+        workspace_dir=tmp_path / "workspace",
+        worker_mode="api",
+        auth_enabled=True,
+        bootstrap_admin_password="Admin!Password123",
+    )
+    with TestClient(create_app(config)) as client:
+        assert client.get("/api/datasets").status_code == 401
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "Admin!Password123"})
+        assert login.status_code == 200
+        assert login.json()["user"]["must_change_password"] is True
+        assert client.get("/api/datasets").status_code == 428
+        changed = client.post(
+            "/api/auth/change-password",
+            json={"current_password": "Admin!Password123", "new_password": "Changed!Password456"},
+        )
+        assert changed.status_code == 200
+        assert client.get("/api/datasets").status_code == 401
+        assert client.post("/api/auth/login", json={"username": "admin", "password": "Changed!Password456"}).status_code == 200
+        viewer = client.post(
+            "/api/users",
+            json={"username": "viewer.user", "password": "Viewer!Password123", "role": "viewer"},
+        )
+        assert viewer.status_code == 200
+        assert viewer.json()["role"] == "viewer"
+        assert client.patch(f"/api/users/{viewer.json()['id']}", json={"disabled": True}).json()["disabled"] is True
+
+    viewer_config = PlatformConfig(
+        app_root=ROOT,
+        workspace_dir=config.workspace_dir,
+        worker_mode="api",
+        auth_enabled=True,
+        bootstrap_admin_password="unused-Password!123",
+    )
+    store = PlatformStore(viewer_config.db_path)
+    viewer_id = next(item["id"] for item in store.list_users() if item["username"] == "viewer.user")
+    store.update_user(viewer_id, disabled=False)
+    with TestClient(create_app(viewer_config)) as viewer_client:
+        assert viewer_client.post("/api/auth/login", json={"username": "viewer.user", "password": "Viewer!Password123"}).status_code == 200
+        assert viewer_client.get("/api/auth/me").status_code == 200
+        assert viewer_client.post("/api/auth/change-password", json={"current_password": "Viewer!Password123", "new_password": "Viewer!Changed456"}).status_code == 200
+        assert viewer_client.post("/api/auth/login", json={"username": "viewer.user", "password": "Viewer!Changed456"}).status_code == 200
+        assert viewer_client.get("/api/datasets").status_code == 200
+        assert viewer_client.post("/api/tasks", json={"type": "renderer_benchmark", "params": {}}).status_code == 403
+
+
+def test_bos_prefix_boundary_is_enforced(tmp_path: Path) -> None:
+    config = PlatformConfig(
+        workspace_dir=tmp_path,
+        bos_bucket="testxyz",
+        bos_prefix="real2sim-poc",
+        bos_access_key_id="configured-but-not-used",
+        bos_secret_access_key="configured-but-not-used",
+    )
+    storage = BosStorage(config)
+    assert storage.object_key("datasets", "team/a.json") == "real2sim-poc/datasets/team/a.json"
+    assert storage.key_from_uri("bos://testxyz/real2sim-poc/models/m1/card.json") == "real2sim-poc/models/m1/card.json"
+    with pytest.raises(StorageBoundaryError):
+        storage.object_key("datasets", "../../droboticflow/secret")
+    with pytest.raises(StorageBoundaryError):
+        storage.assert_owned_key("droboticflow/workspaces/data")
+    with pytest.raises(StorageBoundaryError):
+        storage.key_from_uri("bos://another-bucket/real2sim-poc/datasets/a")
+    with pytest.raises(StorageBoundaryError):
+        normalize_relative_path("../outside")
+
+
+def test_atomic_task_claim_has_no_duplicates(tmp_path: Path) -> None:
+    store = PlatformStore(tmp_path / "state.db")
+    for index in range(24):
+        store.create_task(task_type="renderer_benchmark", params={"index": index}, run_dir=tmp_path / f"run-{index}")
+
+    def claim(worker: int):
+        task = store.claim_next_queued_task(f"worker-{worker}")
+        return task["id"] if task else None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        claimed = [item for item in executor.map(claim, range(24)) if item]
+    assert len(claimed) == 24
+    assert len(set(claimed)) == 24
+    assert all(task["status"] == "running" and task["attempt"] == 1 for task in store.list_tasks())
+
+
+def test_api_capabilities_follow_live_worker_heartbeat(tmp_path: Path) -> None:
+    config = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace", worker_mode="api")
+    store = PlatformStore(config.db_path)
+    store.update_worker_heartbeat(
+        "worker-a800",
+        {
+            "ready": True,
+            "checks": {
+                "ffmpeg": True,
+                "colmap": True,
+                "anysplat_root": True,
+                "anysplat_python": True,
+                "anysplat_pinned": True,
+                "mujoco_python": True,
+                "motrixsim_python": True,
+                "discoverse_act": True,
+                "torch_cuda": True,
+                "act_import": True,
+                "rm65_controller": True,
+            },
+        },
+    )
+    with TestClient(create_app(config)) as client:
+        capabilities = client.get("/api/capabilities").json()
+        assert capabilities["worker"]["connected"] is True
+        assert capabilities["runtimes"]["anysplat"]["ready"] is True
+        assert capabilities["runtimes"]["discoverse_act"]["ready"] is True
+        assert capabilities["runtimes"]["rm65_controller"]["ready"] is True
+
+
+def test_login_rate_limit_blocks_repeated_failures(tmp_path: Path) -> None:
+    config = PlatformConfig(
+        app_root=ROOT,
+        workspace_dir=tmp_path / "workspace",
+        worker_mode="api",
+        auth_enabled=True,
+        bootstrap_admin_password="Admin!Password123",
+    )
+    with TestClient(create_app(config)) as client:
+        for _ in range(8):
+            assert client.post("/api/auth/login", json={"username": "admin", "password": "wrong-password"}).status_code == 401
+        assert client.post("/api/auth/login", json={"username": "admin", "password": "wrong-password"}).status_code == 429
+
+
+def test_production_task_gates_reject_fake_routes(tmp_path: Path) -> None:
+    config = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace", worker_mode="api", production_mode=True)
+    client = TestClient(create_app(config))
+    dry_run = client.post(
+        "/api/tasks",
+        json={"type": "scene_reconstruction", "params": {"input_path": str(tmp_path), "dry_run": True}},
+    )
+    assert dry_run.status_code == 400
+    legacy = client.post(
+        "/api/tasks",
+        json={"type": "training", "params": {"dataset_path": str(tmp_path), "recipe": "bc_v2"}},
+    )
+    assert legacy.status_code == 400
+    fake_expert = client.post(
+        "/api/tasks",
+        json={"type": "expert_collection", "params": {"scene_path": str(tmp_path), "policy_preset": "pick_and_place_v1"}},
+    )
+    assert fake_expert.status_code == 400
+
+
+@pytest.mark.integration
+def test_real_rm65_physical_collection_writes_act_hdf5(tmp_path: Path) -> None:
+    scene = ROOT / "workspace/motrixsim_assets/parlour_rm65_pick_place/simulator_assets/rm65_table_pick_place.xml"
+    if not scene.is_file():
+        pytest.skip("real imported RM65 scene asset is not present")
+    manifest = collect(scene, tmp_path / "collection", required_successes=1, max_attempts=2, max_steps=240, seed=7, width=160, height=120)
+    assert manifest["successful_episodes"] == 1
+    assert manifest["episodes"][0]["lift_height"] >= 0.10
+    assert manifest["episodes"][0]["place_error"] <= 0.05
+    episode = tmp_path / "collection/episode_0.hdf5"
+    with h5py.File(episode, "r") as root:
+        assert root["/observations/qpos"].shape[1] == 7
+        assert root["/action"].shape[1] == 7
+        assert root["/observations/images/overview"].shape[0] > 0
+        assert root["/observations/contact"].shape[1] == 2
+        assert bool(root.attrs["success"]) is True
+    assert (tmp_path / "collection/episode_0.mp4").stat().st_size > 0

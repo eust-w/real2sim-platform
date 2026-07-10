@@ -33,6 +33,24 @@ class PlatformConfig:
     cuda_home: Path = Path("/usr/local/cuda-12.1")
     runtime_env_script: Path = Path("/opt/gs_playground_real2sim_48q/scripts/real2sim_wuying_paper_env.sh")
     allowed_path_roots: tuple[Path, ...] = ()
+    worker_mode: str = "embedded"
+    worker_id: str = "local-worker"
+    production_mode: bool = False
+    auth_enabled: bool = False
+    secure_cookies: bool = False
+    session_ttl_seconds: int = 43200
+    bootstrap_admin_username: str = "admin"
+    bootstrap_admin_password: str = ""
+    bos_endpoint: str = "https://bj.bcebos.com"
+    bos_bucket: str = ""
+    bos_prefix: str = "real2sim-poc"
+    bos_access_key_id: str = ""
+    bos_secret_access_key: str = ""
+    discoverse_commit: str = "d67f47c084aba0e0cf422a8725235f8b9238655a"
+    act_commit: str = "f8ab39c8d829d85571ab6d0250412ba4d0698fa0"
+    anysplat_commit: str = "5f5e208a7dd57d52e43ea0d553a95eab526e8775"
+    anysplat_model_revision: str = "d2e8c343672646041ad4ea518184968f94362f01"
+    vggt_model_revision: str = "860abec7937da0a4c03c41d3c269c366e82abdf9"
 
     @property
     def db_path(self) -> Path:
@@ -63,6 +81,14 @@ class PlatformConfig:
         return self.workspace_dir / "manifests"
 
     @property
+    def upload_parts_dir(self) -> Path:
+        return self.workspace_dir / "upload_parts"
+
+    @property
+    def auth_bootstrap_path(self) -> Path:
+        return self.workspace_dir / "bootstrap-admin.txt"
+
+    @property
     def effective_allowed_path_roots(self) -> tuple[Path, ...]:
         if self.allowed_path_roots:
             return self.allowed_path_roots
@@ -80,9 +106,7 @@ class PlatformConfig:
 
 def load_config(path: Path | None = None) -> PlatformConfig:
     config_path = path or Path(os.environ.get("REAL2SIM_PLATFORM_CONFIG", ""))
-    if not config_path or not config_path.is_file():
-        return PlatformConfig()
-    values = _parse_simple_toml(config_path.read_text(encoding="utf-8"))
+    values = _parse_simple_toml(config_path.read_text(encoding="utf-8")) if config_path and config_path.is_file() else {}
     app_root = Path(str(values.get("app_root", APP_ROOT)))
     workspace_dir = Path(str(values.get("workspace_dir", WORKSPACE_ROOT)))
     return PlatformConfig(
@@ -106,11 +130,29 @@ def load_config(path: Path | None = None) -> PlatformConfig:
         cuda_home=Path(str(values.get("cuda_home", "/usr/local/cuda-12.1"))),
         runtime_env_script=Path(str(values.get("runtime_env_script", "/opt/gs_playground_real2sim_48q/scripts/real2sim_wuying_paper_env.sh"))),
         allowed_path_roots=_parse_path_tuple(str(values.get("allowed_path_roots", ""))),
+        worker_mode=str(values.get("worker_mode", os.environ.get("REAL2SIM_WORKER_MODE", "embedded"))),
+        worker_id=str(values.get("worker_id", os.environ.get("REAL2SIM_WORKER_ID", "local-worker"))),
+        production_mode=_as_bool(values.get("production_mode", os.environ.get("REAL2SIM_PRODUCTION_MODE", "0"))),
+        auth_enabled=_as_bool(values.get("auth_enabled", os.environ.get("REAL2SIM_AUTH_ENABLED", "0"))),
+        secure_cookies=_as_bool(values.get("secure_cookies", os.environ.get("REAL2SIM_SECURE_COOKIES", "0"))),
+        session_ttl_seconds=int(values.get("session_ttl_seconds", os.environ.get("REAL2SIM_SESSION_TTL_SECONDS", "43200"))),
+        bootstrap_admin_username=str(values.get("bootstrap_admin_username", os.environ.get("REAL2SIM_BOOTSTRAP_ADMIN_USERNAME", "admin"))),
+        bootstrap_admin_password=str(values.get("bootstrap_admin_password", os.environ.get("REAL2SIM_BOOTSTRAP_ADMIN_PASSWORD", ""))),
+        bos_endpoint=str(values.get("bos_endpoint", os.environ.get("BOS_ENDPOINT", "https://bj.bcebos.com"))),
+        bos_bucket=str(values.get("bos_bucket", os.environ.get("BOS_BUCKET", ""))),
+        bos_prefix=str(values.get("bos_prefix", os.environ.get("REAL2SIM_BOS_PREFIX", "real2sim-poc"))),
+        bos_access_key_id=str(values.get("bos_access_key_id", os.environ.get("BOS_ACCESS_KEY_ID", ""))),
+        bos_secret_access_key=str(values.get("bos_secret_access_key", os.environ.get("BOS_SECRET_ACCESS_KEY", ""))),
+        discoverse_commit=str(values.get("discoverse_commit", os.environ.get("REAL2SIM_DISCOVERSE_COMMIT", "d67f47c084aba0e0cf422a8725235f8b9238655a"))),
+        act_commit=str(values.get("act_commit", os.environ.get("REAL2SIM_ACT_COMMIT", "f8ab39c8d829d85571ab6d0250412ba4d0698fa0"))),
+        anysplat_commit=str(values.get("anysplat_commit", os.environ.get("REAL2SIM_ANYSPLAT_COMMIT", "5f5e208a7dd57d52e43ea0d553a95eab526e8775"))),
+        anysplat_model_revision=str(values.get("anysplat_model_revision", os.environ.get("REAL2SIM_ANYSPLAT_MODEL_REVISION", "d2e8c343672646041ad4ea518184968f94362f01"))),
+        vggt_model_revision=str(values.get("vggt_model_revision", os.environ.get("REAL2SIM_VGGT_MODEL_REVISION", "860abec7937da0a4c03c41d3c269c366e82abdf9"))),
     )
 
 
 def ensure_workspace(config: PlatformConfig) -> None:
-    for path in [config.workspace_dir, config.uploads_dir, config.datasets_dir, config.scenes_dir, config.runs_dir, config.models_dir, config.manifests_dir]:
+    for path in [config.workspace_dir, config.uploads_dir, config.upload_parts_dir, config.datasets_dir, config.scenes_dir, config.runs_dir, config.models_dir, config.manifests_dir]:
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -138,6 +180,21 @@ def write_default_config(path: Path, config: PlatformConfig | None = None) -> No
         f'cuda_home = "{cfg.cuda_home.as_posix()}"',
         f'runtime_env_script = "{cfg.runtime_env_script.as_posix()}"',
         f'allowed_path_roots = "{_format_path_tuple(cfg.effective_allowed_path_roots)}"',
+        f'worker_mode = "{cfg.worker_mode}"',
+        f'worker_id = "{cfg.worker_id}"',
+        f"production_mode = {str(cfg.production_mode).lower()}",
+        f"auth_enabled = {str(cfg.auth_enabled).lower()}",
+        f"secure_cookies = {str(cfg.secure_cookies).lower()}",
+        f"session_ttl_seconds = {cfg.session_ttl_seconds}",
+        f'bootstrap_admin_username = "{cfg.bootstrap_admin_username}"',
+        f'bos_endpoint = "{cfg.bos_endpoint}"',
+        f'bos_bucket = "{cfg.bos_bucket}"',
+        f'bos_prefix = "{cfg.bos_prefix}"',
+        f'discoverse_commit = "{cfg.discoverse_commit}"',
+        f'act_commit = "{cfg.act_commit}"',
+        f'anysplat_commit = "{cfg.anysplat_commit}"',
+        f'anysplat_model_revision = "{cfg.anysplat_model_revision}"',
+        f'vggt_model_revision = "{cfg.vggt_model_revision}"',
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -169,6 +226,9 @@ def _parse_simple_toml(text: str) -> dict[str, Any]:
         if value.startswith('"') and value.endswith('"'):
             values[key] = value[1:-1]
         else:
+            if value.lower() in {"true", "false"}:
+                values[key] = value.lower() == "true"
+                continue
             try:
                 values[key] = int(value)
             except ValueError:
@@ -184,3 +244,9 @@ def _parse_path_tuple(value: str) -> tuple[Path, ...]:
 
 def _format_path_tuple(paths: tuple[Path, ...]) -> str:
     return ":".join(path.as_posix() for path in paths)
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}

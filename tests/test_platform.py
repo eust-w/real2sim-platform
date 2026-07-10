@@ -215,11 +215,14 @@ def test_scene_asset_append_updates_manifest_and_artifact(tmp_path: Path) -> Non
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["asset"]["name"] == "fixture metadata"
-    manifest = client.get(f"/api/scenes/{scene['id']}/manifest").json()
+    assert payload["scene"]["id"] != scene["id"]
+    assert payload["parent_scene_id"] == scene["id"]
+    manifest = client.get(f"/api/scenes/{payload['scene']['id']}/manifest").json()
     added = [item for item in manifest["assets"] if item["name"] == "fixture metadata"]
     assert added
     assert added[0]["role"] == "simulator_import"
     assert added[0]["transform"]["translation"] == [1, 2, 3]
+    assert manifest["revision"]["parent_scene_id"] == scene["id"]
     assert client.get(added[0]["url"]).status_code == 200
 
 

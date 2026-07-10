@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260710-motrix-runtime-v7";
+const STATIC_VERSION = "20260710-poc-product-v1";
 
 const state = {
   datasets: [],
@@ -11,7 +11,13 @@ const state = {
   editing: null,
   assetLibrary: [],
   refreshTimer: null,
+  taskEvents: null,
   selections: {},
+  user: null,
+  capabilities: null,
+  recipes: null,
+  initialized: false,
+  pendingPassword: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -25,11 +31,95 @@ const taskScopes = {
 };
 
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  const response = await fetch(path, { credentials: "same-origin", ...options });
   const type = response.headers.get("content-type") || "";
   const payload = type.includes("application/json") ? await response.json() : await response.text();
-  if (!response.ok) throw new Error(payload?.detail || payload?.error || response.statusText);
+  if (!response.ok) {
+    const detail = typeof payload?.detail === "object" ? payload.detail.message || JSON.stringify(payload.detail) : payload?.detail || payload?.error || response.statusText;
+    const error = new Error(detail);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
   return payload;
+}
+
+function showAuth(mode = "login") {
+  $("appShell").hidden = true;
+  $("authShell").hidden = false;
+  $("loginForm").hidden = mode !== "login";
+  $("passwordForm").hidden = mode !== "password";
+  if (mode === "password" && state.pendingPassword) $("currentPassword").value = state.pendingPassword;
+}
+
+function showApp() {
+  $("authShell").hidden = true;
+  $("appShell").hidden = false;
+  setText("currentUserLabel", `${state.user?.username || "本地用户"} · ${roleLabel(state.user?.role)}`);
+  const usersButton = $("openUsers");
+  if (usersButton) usersButton.hidden = state.user?.role !== "admin";
+}
+
+async function bootstrap() {
+  state.capabilities = await api("/api/capabilities");
+  let authState;
+  try {
+    authState = await api("/api/auth/me");
+  } catch (error) {
+    if (error.status === 401) return showAuth("login");
+    throw error;
+  }
+  state.user = authState.user;
+  if (state.user?.must_change_password) return showAuth("password");
+  state.recipes = await api("/api/recipes");
+  applyRuntimeOptions();
+  showApp();
+  await refresh();
+  startTaskEvents();
+  clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(() => refresh({ quiet: true }).catch((error) => console.warn(error)), 15000);
+  state.initialized = true;
+}
+
+function startTaskEvents() {
+  state.taskEvents?.close();
+  state.taskEvents = new EventSource("/api/events/tasks");
+  state.taskEvents.addEventListener("tasks", (event) => {
+    const previousTerminal = new Set(state.tasks.filter((task) => terminalStatus(task.status)).map((task) => task.id));
+    state.tasks = JSON.parse(event.data);
+    renderScopedTaskLists();
+    renderOverview();
+    if (state.selectedTaskId && $("taskDrawer")?.classList.contains("open")) showTask(state.selectedTaskId, { preservePreview: true }).catch(console.warn);
+    if (state.tasks.some((task) => terminalStatus(task.status) && !previousTerminal.has(task.id))) refresh({ quiet: true }).catch(console.warn);
+  });
+  state.taskEvents.onerror = () => console.warn("任务事件连接暂时中断，浏览器将自动重连");
+}
+
+function terminalStatus(status) {
+  return ["succeeded", "failed", "failed_recovered", "canceled"].includes(status);
+}
+
+function roleLabel(role) {
+  return { admin: "管理员", engineer: "工程师", viewer: "只读" }[role] || "本地模式";
+}
+
+function applyRuntimeOptions() {
+  const collection = state.recipes?.collection || [];
+  const training = state.recipes?.training || [];
+  fillRecipeSelect("policyPreset", collection, "暂无可用真实控制器");
+  fillRecipeSelect("trainRecipe", training.filter((item) => !item.read_only), "暂无可用训练配方");
+}
+
+function fillRecipeSelect(id, items, emptyLabel) {
+  const select = $(id);
+  if (!select) return;
+  const enabled = items.find((item) => item.enabled);
+  const unavailableReason = items.find((item) => !item.enabled)?.reason;
+  select.innerHTML = enabled
+    ? items.map((item) => `<option value="${escapeAttr(item.id)}" ${item.enabled ? "" : "disabled"}>${escapeHtml(item.name)}${item.enabled ? "" : ` · ${item.reason || "不可用"}`}</option>`).join("")
+    : `<option value="">${escapeHtml(unavailableReason || emptyLabel)}</option>${items.map((item) => `<option value="${escapeAttr(item.id)}" disabled>${escapeHtml(item.name)} · ${escapeHtml(item.reason || "不可用")}</option>`).join("")}`;
+  select.value = enabled?.id || "";
+  select.disabled = !enabled;
 }
 
 async function refresh({ quiet = false } = {}) {
@@ -77,13 +167,15 @@ function renderAll() {
 }
 
 function updateActionAvailability() {
-  setActionAvailability("createMediaPrepare", state.datasets.length > 0, "请先新增数据集");
-  setActionAvailability("createPreflightTask", preparedDatasets().length > 0, "请先准备帧数据");
-  setActionAvailability("createSceneTask", preparedDatasets().length > 0, "请先准备帧数据");
-  setActionAvailability("createCollectTask", state.scenes.length > 0, "请先完成场景重建");
-  setActionAvailability("createTrainTask", collectionDatasets().length > 0, "请先完成专家采集");
-  setActionAvailability("createInferTask", state.models.length > 0 && state.scenes.length > 0, state.models.length ? "请先完成场景重建" : "请先训练模型");
-  setActionAvailability("addSceneAsset", state.scenes.length > 0, "请先完成场景重建");
+  const writable = state.user?.role !== "viewer";
+  document.body.classList.toggle("viewer-mode", !writable);
+  setActionAvailability("createMediaPrepare", writable && state.datasets.length > 0, writable ? "请先新增数据集" : "只读用户不能创建任务");
+  setActionAvailability("createPreflightTask", writable && preparedDatasets().length > 0, "请先准备帧数据");
+  setActionAvailability("createSceneTask", writable && preparedDatasets().length > 0, "请先准备帧数据");
+  setActionAvailability("createCollectTask", writable && state.scenes.length > 0 && Boolean($("policyPreset")?.value), "请先选择兼容真实控制器的场景");
+  setActionAvailability("createTrainTask", writable && collectionDatasets().length > 0 && Boolean($("trainRecipe")?.value), "请先完成真实专家采集并确认 ACT 运行时");
+  setActionAvailability("createInferTask", writable && state.models.length > 0 && state.scenes.length > 0, state.models.length ? "请先完成场景重建" : "请先训练模型");
+  setActionAvailability("addSceneAsset", writable && state.scenes.length > 0, "请先完成场景重建");
 }
 
 function setActionAvailability(id, enabled, reason) {
@@ -293,14 +385,24 @@ function renderTrainingChart() {
   const best = state.models[0];
   const score = best ? modelScore(best) : 0;
   const loss = best?.metrics?.loss ?? best?.metrics?.val_loss ?? null;
+  if (!best) {
+    setHtml("trainingChart", emptyState("完成一次真实训练后，这里会显示损失曲线和验证指标。"));
+    return;
+  }
+  const history = [best?.metrics?.loss_history, best?.metrics?.train_loss_history, best?.metrics?.loss_curve]
+    .find((value) => Array.isArray(value) && value.length > 1) || [];
+  const finiteHistory = history.map(Number).filter(Number.isFinite).slice(-48);
+  const maxLoss = finiteHistory.length ? Math.max(...finiteHistory) : 0;
+  const minLoss = finiteHistory.length ? Math.min(...finiteHistory) : 0;
+  const range = Math.max(maxLoss - minLoss, Number.EPSILON);
   setHtml("trainingChart", `
     <div class="chart-kpis">
-      <div><span>成功率</span><strong>${best ? `${Math.round(score)}%` : "--"}</strong></div>
+      <div><span>成功率</span><strong>${Number.isFinite(score) ? `${Math.round(score)}%` : "--"}</strong></div>
       <div><span>验证损失</span><strong>${loss !== null ? Number(loss).toFixed(3) : "--"}</strong></div>
     </div>
-    <div class="line-chart" aria-label="训练曲线">
-      ${[35, 48, 54, 63, Math.max(38, score || 72), Math.max(44, Math.min(96, (score || 76) + 8))].map((height) => `<span style="height:${height}%"></span>`).join("")}
-    </div>
+    ${finiteHistory.length > 1
+      ? `<div class="line-chart" aria-label="真实训练损失曲线">${finiteHistory.map((value) => `<span style="height:${Math.max(8, 100 - ((value - minLoss) / range) * 88)}%" title="${escapeAttr(value.toFixed(6))}"></span>`).join("")}</div>`
+      : `<div class="inline-empty">该模型没有可绘制的损失历史；可在模型卡中查看最终指标。</div>`}
   `);
 }
 
@@ -653,7 +755,7 @@ function showBulkResult(title, result) {
 
 function openImportDialog(type) {
   state.currentImport = type;
-  const title = { hf: "导入 HuggingFace 数据", upload: "上传数据文件", local: "导入本地目录" }[type] || "新增数据";
+  const title = { hf: "导入 HuggingFace 数据", upload: "上传数据文件", bos: "从 BOS 导入", local: "导入本地目录" }[type] || "新增数据";
   setText("importTitle", title);
   setText("importSubtitle", "主流程只展示资源选择；技术参数集中在这里配置。");
   if (type === "hf") {
@@ -672,7 +774,18 @@ function openImportDialog(type) {
       </details>
     `);
   } else if (type === "upload") {
-    setHtml("importFields", `<label class="span-2">选择文件<input id="uploadFile" type="file"></label>`);
+    setHtml("importFields", `
+      <label class="span-2">选择文件<input id="uploadFile" type="file"></label>
+      <div id="uploadProgress" class="upload-progress span-2"><span></span><strong>等待选择文件</strong></div>
+      <p class="field-note span-2">上传会按 8MB 分片写入 BOS，刷新或网络中断后重新选择同一文件即可续传。</p>
+    `);
+  } else if (type === "bos") {
+    setHtml("importFields", `
+      <label>BOS 区域<select id="bosArea"><option value="datasets">数据集</option><option value="uploads">上传文件</option></select></label>
+      <label>显示名称<input id="bosDatasetName" placeholder="例如 Playroom 原始数据"></label>
+      <label class="span-2">授权前缀<input id="bosPrefix" placeholder="team/playroom/2026-07"></label>
+      <p class="field-note span-2">只能访问 real2sim-poc/ 下的授权区域，无法列举或删除其他项目数据。</p>
+    `);
   } else {
     setHtml("importFields", `
       <label class="span-2">白名单目录<input id="datasetPath" placeholder="选择或粘贴配置白名单内目录"></label>
@@ -695,10 +808,24 @@ async function submitImport(event) {
   } else if (state.currentImport === "upload") {
     const file = $("uploadFile")?.files?.[0];
     if (!file) return toast("请先选择文件。");
-    const body = new FormData();
-    body.append("file", file);
-    await api("/api/datasets/upload", { method: "POST", body });
-    toast("文件已上传并登记为数据集");
+    if (state.capabilities?.storage?.bos?.configured) {
+      await uploadFileResumable(file);
+    } else {
+      const body = new FormData();
+      body.append("file", file);
+      await api("/api/datasets/upload", { method: "POST", body });
+    }
+    toast("文件已校验并登记为数据集");
+    await refresh({ quiet: true });
+  } else if (state.currentImport === "bos") {
+    const prefix = $("bosPrefix")?.value.trim();
+    if (!prefix) return toast("请填写授权前缀。");
+    await api("/api/datasets/import-bos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prefix: `${$("bosArea")?.value || "datasets"}/${prefix}`, name: $("bosDatasetName")?.value.trim() || undefined }),
+    });
+    toast("BOS 导入任务已创建");
     await refresh({ quiet: true });
   } else {
     const path = $("datasetPath")?.value.trim();
@@ -714,6 +841,50 @@ async function submitImport(event) {
   $("importDialog")?.close();
 }
 
+async function uploadFileResumable(file) {
+  const chunkSize = 8 * 1024 * 1024;
+  const resumeKey = `real2sim-upload:${file.name}:${file.size}:${file.lastModified}`;
+  let upload = null;
+  const savedId = localStorage.getItem(resumeKey);
+  if (savedId) {
+    try {
+      upload = await api(`/api/uploads/${savedId}`);
+      if (upload.filename !== file.name || upload.total_size !== file.size || upload.status !== "uploading") upload = null;
+    } catch (_error) {
+      upload = null;
+    }
+  }
+  if (!upload) {
+    upload = await api("/api/uploads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, content_type: file.type || "application/octet-stream", total_size: file.size, chunk_size: chunkSize }),
+    });
+    localStorage.setItem(resumeKey, upload.id);
+  }
+  const received = new Set(upload.received_parts || []);
+  for (let part = 1; part <= upload.total_parts; part += 1) {
+    if (received.has(part)) continue;
+    const start = (part - 1) * upload.chunk_size;
+    const end = Math.min(file.size, start + upload.chunk_size);
+    await api(`/api/uploads/${upload.id}/parts/${part}`, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: file.slice(start, end) });
+    received.add(part);
+    renderUploadProgress(received.size / upload.total_parts, `已上传 ${received.size}/${upload.total_parts} 个分片`);
+  }
+  renderUploadProgress(0.98, "正在校验 SHA-256 并写入 BOS");
+  const completed = await api(`/api/uploads/${upload.id}/complete`, { method: "POST" });
+  localStorage.removeItem(resumeKey);
+  renderUploadProgress(1, `上传完成 · ${completed.upload.checksum_actual.slice(0, 12)}`);
+  return completed;
+}
+
+function renderUploadProgress(value, label) {
+  const node = $("uploadProgress");
+  if (!node) return;
+  node.querySelector("span").style.width = `${Math.max(0, Math.min(100, value * 100))}%`;
+  node.querySelector("strong").textContent = label;
+}
+
 function openViewer(sceneId) {
   state.activeSceneId = sceneId;
   const assetScene = $("assetScene");
@@ -726,9 +897,19 @@ function openViewer(sceneId) {
 }
 
 function openViewerFullscreen(url) {
-  const viewerUrl = url || $("openSceneViewerFull")?.dataset.viewerUrl || $("scenePreview")?.getAttribute("src");
-  if (!viewerUrl) return toast("请先选择一个场景。");
-  window.open(viewerUrl, "_blank", "noopener,noreferrer");
+  const panel = document.querySelector(".viewer-panel");
+  const button = $("openSceneViewerFull");
+  const iframe = $("scenePreview");
+  const viewerUrl = url || button?.dataset.viewerUrl || iframe?.getAttribute("src");
+  if (!panel || !viewerUrl) return toast("请先选择一个场景。");
+  const maximizing = !panel.classList.contains("is-maximized");
+  panel.classList.toggle("is-maximized", maximizing);
+  document.body.classList.toggle("viewer-maximized", maximizing);
+  if (button) {
+    button.textContent = maximizing ? "退出最大化" : "最大化预览";
+    button.setAttribute("aria-pressed", String(maximizing));
+  }
+  if (iframe && maximizing && !iframe.getAttribute("src")) iframe.src = viewerUrl;
 }
 
 function openAssetEditor(sceneId) {
@@ -822,7 +1003,7 @@ function reconstructionOptions() {
     scene_name: $("sceneName")?.value.trim() || undefined,
     renderer: $("rendererSelect")?.value || "auto",
     simulators: simulatorValues(),
-    dry_run: $("dryRunScene")?.checked || false,
+    dry_run: false,
     auto_prepare: $("autoPrepareScene")?.checked || false,
     allow_low_quality: $("allowLowQualityScene")?.checked || false,
     min_frames: Number($("sceneMinFrames")?.value || 30),
@@ -1267,7 +1448,100 @@ function toast(message) {
   node._timer = setTimeout(() => node.classList.remove("show"), 2600);
 }
 
+async function submitLogin(event) {
+  event.preventDefault();
+  setText("loginError", "");
+  const username = $("loginUsername").value.trim();
+  const password = $("loginPassword").value;
+  try {
+    const result = await api("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    state.user = result.user;
+    state.pendingPassword = password;
+    if (state.user?.must_change_password) {
+      showAuth("password");
+      return;
+    }
+    state.pendingPassword = "";
+    await bootstrap();
+  } catch (error) {
+    setText("loginError", error.message || "登录失败");
+  }
+}
+
+async function submitPasswordChange(event) {
+  event.preventDefault();
+  setText("passwordError", "");
+  const currentPassword = $("currentPassword").value;
+  const newPassword = $("newPassword").value;
+  if (newPassword !== $("confirmPassword").value) return setText("passwordError", "两次输入的新密码不一致");
+  try {
+    await api("/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    state.pendingPassword = "";
+    $("loginPassword").value = "";
+    showAuth("login");
+    setText("loginError", "密码已更新，请使用新密码登录");
+  } catch (error) {
+    setText("passwordError", error.message || "密码更新失败");
+  }
+}
+
+async function logout() {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } finally {
+    state.taskEvents?.close();
+    clearInterval(state.refreshTimer);
+    state.user = null;
+    state.initialized = false;
+    showAuth("login");
+  }
+}
+
+async function openUserManager() {
+  await renderUsers();
+  $("usersDialog")?.showModal();
+}
+
+async function renderUsers() {
+  const users = await api("/api/users");
+  setHtml("userList", users.map((user) => `
+    <div class="user-row">
+      <div><strong>${escapeHtml(user.username)}</strong><span>${escapeHtml(roleLabel(user.role))} · ${user.disabled ? "已禁用" : user.must_change_password ? "待首次改密" : "可用"}</span></div>
+      <div class="row-actions">
+        <button data-user-toggle="${escapeAttr(user.id)}" data-user-disabled="${user.disabled}">${user.disabled ? "启用" : "禁用"}</button>
+        <button data-user-reset="${escapeAttr(user.id)}">重置密码</button>
+        <button class="danger-button" data-user-delete="${escapeAttr(user.id)}">删除</button>
+      </div>
+    </div>
+  `).join("") || emptyState("暂无团队用户。"));
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  await api("/api/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: $("newUsername").value.trim(), password: $("newUserPassword").value, role: $("newUserRole").value }),
+  });
+  event.target.reset();
+  toast("用户已创建，首次登录必须修改密码");
+  await renderUsers();
+}
+
 function bindEvents() {
+  $("loginForm")?.addEventListener("submit", submitLogin);
+  $("passwordForm")?.addEventListener("submit", submitPasswordChange);
+  $("logoutButton")?.addEventListener("click", logout);
+  $("openUsers")?.addEventListener("click", openUserManager);
+  $("createUserForm")?.addEventListener("submit", createUser);
   document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => switchTab(button.dataset.tab)));
   $("closeDrawer")?.addEventListener("click", closeDrawer);
   $("importForm")?.addEventListener("submit", submitImport);
@@ -1323,13 +1597,13 @@ function bindEvents() {
     if (!sceneId) return toast("请先选择一个场景。");
     const payload = sceneAssetPayload();
     if (!payload.path) return toast("请选择资产来源，或在高级入口填写白名单文件。");
-    await api(`/api/scenes/${sceneId}/assets`, {
+    const result = await api(`/api/scenes/${sceneId}/assets`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    state.activeSceneId = sceneId;
-    toast("资产已添加到场景清单");
+    state.activeSceneId = result.scene?.id || sceneId;
+    toast("资产已添加，并创建了新的场景修订版本");
     await refresh({ quiet: true });
     renderSceneViewerShell();
     scrollIntoViewIfPossible("#assetRail");
@@ -1358,7 +1632,15 @@ function bindEvents() {
     const sceneId = $("inferScene")?.value || state.scenes[0]?.id;
     if (!modelId) return toast("请先训练模型。");
     if (!sceneId) return toast("请先完成场景重建。");
-    await createTask("inference", { model_id: modelId, scene_id: sceneId, steps: Number($("inferSteps")?.value || 80), workers: Number($("inferWorkers")?.value || 1) });
+    await createTask("inference", {
+      model_id: modelId,
+      scene_id: sceneId,
+      recipe: "discoverse_act",
+      episodes: Number($("inferEpisodes")?.value || 10),
+      steps: Number($("inferSteps")?.value || 240),
+      workers: Number($("inferWorkers")?.value || 1),
+      minimum_success_rate: 0.5,
+    });
   });
 
   document.body.addEventListener("change", (event) => {
@@ -1377,6 +1659,37 @@ function bindEvents() {
 async function handleBodyClick(event) {
   const closeDialog = event.target.closest("[data-close-dialog]");
   if (closeDialog) $(closeDialog.dataset.closeDialog)?.close();
+
+  const userToggle = event.target.closest("[data-user-toggle]");
+  if (userToggle) {
+    await api(`/api/users/${userToggle.dataset.userToggle}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ disabled: userToggle.dataset.userDisabled !== "true" }),
+    });
+    await renderUsers();
+  }
+
+  const userReset = event.target.closest("[data-user-reset]");
+  if (userReset) {
+    const password = prompt("输入至少 12 位的新初始密码；用户下次登录仍需修改密码。") || "";
+    if (password) {
+      await api(`/api/users/${userReset.dataset.userReset}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reset_password: password }),
+      });
+      toast("密码已重置");
+      await renderUsers();
+    }
+  }
+
+  const userDelete = event.target.closest("[data-user-delete]");
+  if (userDelete && confirm("删除用户会终止其会话，但不会删除业务资源。确认继续？")) {
+    await api(`/api/users/${userDelete.dataset.userDelete}`, { method: "DELETE" });
+    toast("用户已删除");
+    await renderUsers();
+  }
 
   const openImport = event.target.closest("[data-open-import]");
   if (openImport) openImportDialog(openImport.dataset.openImport);
@@ -1482,9 +1795,20 @@ async function handleBodyClick(event) {
   }
 }
 
-window.addEventListener("unhandledrejection", (event) => toast(event.reason?.message || String(event.reason || "操作失败")));
+window.addEventListener("unhandledrejection", (event) => {
+  if (event.reason?.status === 401) showAuth("login");
+  if (event.reason?.status === 428) showAuth("password");
+  toast(event.reason?.message || String(event.reason || "操作失败"));
+});
 window.addEventListener("error", (event) => event.message && toast(event.message));
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && document.querySelector(".viewer-panel.is-maximized")) {
+    openViewerFullscreen();
+  }
+});
 
 bindEvents();
-refresh().catch((error) => toast(error.message));
-state.refreshTimer = setInterval(() => refresh({ quiet: true }).catch((error) => console.warn(error)), 4000);
+bootstrap().catch((error) => {
+  toast(error.message || "平台初始化失败");
+  if (error.status === 401) showAuth("login");
+});
