@@ -1067,6 +1067,7 @@ def _run_discoverse_act_training(config: PlatformConfig, store: PlatformStore, t
             "camera_names": dataset_info["camera_names"],
             "state_dim": dataset_info["state_dim"],
             "action_dim": dataset_info["action_dim"],
+            "image_color_order": "RGB (OpenCV-decoded BGR is converted by the generated ACT augmentor)",
             "config_path": str(config_path),
             "runtime_compatibility": "HDF5 ACT training; AIRBOT MCAP/hardware codecs remain optional and fail explicitly when requested",
         },
@@ -2085,9 +2086,9 @@ def policy_maker(config: dict, stage=None):
     return policy
 
 
-@activator(False)
+@activator(True)
 def augment_images(image):
-    return image
+    return image[:, [2, 1, 0], ...]
 
 
 set_paths({str(dataset_path)!r}, {str(checkpoint_dir)!r}, {str(stats_path)!r})

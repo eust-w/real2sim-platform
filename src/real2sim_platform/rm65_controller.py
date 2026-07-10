@@ -255,6 +255,7 @@ def collect(scene_path: Path, out_dir: Path, *, required_successes: int, max_att
         "runtime": "mujoco",
         "scene": str(scene_path),
         "camera_names": ["overview"],
+        "image_encoding": {"codec": "jpeg", "semantic_color_order": "RGB", "opencv_decode_color_order": "BGR"},
         "state_dim": 7,
         "action_dim": 7,
         "required_successes": required_successes,
@@ -286,6 +287,8 @@ def _write_hdf5_episode(path: Path, result: EpisodeResult) -> None:
         root.attrs["sim"] = True
         root.attrs["compress"] = True
         root.attrs["success"] = bool(result.success)
+        root.attrs["image_color_order"] = "RGB"
+        root.attrs["opencv_decode_color_order"] = "BGR"
         root.create_dataset("/observations/qpos", data=observations, dtype="f4")
         root.create_dataset("/action", data=actions, dtype="f4")
         root.create_dataset("/observations/contact", data=contacts, dtype="u1")

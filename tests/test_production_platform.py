@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from real2sim_platform.config import PlatformConfig
-from real2sim_platform.adapters import index_artifacts_for_task
+from real2sim_platform.adapters import _act_task_config_source, index_artifacts_for_task
 from real2sim_platform.rm65_controller import _write_preview_video, collect
 from real2sim_platform.runtime_gate import _motrixsim_assets_probe, runtime_key
 from real2sim_platform.server import create_app
@@ -307,6 +307,25 @@ def test_discoverse_act_runtime_patch_keeps_airbot_dependency_explicit(tmp_path:
     assert module.patch_optional_airbot_dependency(target) is False
 
 
+def test_generated_act_config_converts_opencv_bgr_to_rgb(tmp_path: Path) -> None:
+    source = _act_task_config_source(
+        task_name="rm65_test",
+        dataset_path=tmp_path / "dataset",
+        checkpoint_dir=tmp_path / "checkpoints",
+        stats_path=tmp_path / "stats.pkl",
+        camera_names=["overview"],
+        state_dim=7,
+        action_dim=7,
+        epochs=2,
+        batch_size=2,
+        chunk_size=16,
+        validate_every=1,
+        save_every=1,
+    )
+    assert "@activator(True)" in source
+    assert "return image[:, [2, 1, 0], ...]" in source
+
+
 def test_runtime_gate_rejects_unresolved_motrixsim_lfs_pointer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "motrixsim-docs"
     required = [
@@ -358,4 +377,6 @@ def test_real_rm65_physical_collection_writes_act_hdf5(tmp_path: Path) -> None:
         assert root["/observations/images/overview"].shape[0] > 0
         assert root["/observations/contact"].shape[1] == 2
         assert bool(root.attrs["success"]) is True
+        assert root.attrs["image_color_order"] == "RGB"
+        assert root.attrs["opencv_decode_color_order"] == "BGR"
     assert (tmp_path / "collection/episode_0.mp4").stat().st_size > 0
