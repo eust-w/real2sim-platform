@@ -828,7 +828,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume-report", type=Path, default=Path(os.environ["REAL2SIM_POC_RESUME_REPORT"]) if os.environ.get("REAL2SIM_POC_RESUME_REPORT") else None)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("REAL2SIM_POC_ACCEPTANCE_TIMEOUT_SECONDS", "28800")))
-    parser.add_argument("--act-epochs", type=int, default=int(os.environ.get("REAL2SIM_POC_ACT_EPOCHS", "100")))
+    parser.add_argument("--act-epochs", type=int, default=int(os.environ.get("REAL2SIM_POC_ACT_EPOCHS", "500")))
     return parser.parse_args()
 
 
