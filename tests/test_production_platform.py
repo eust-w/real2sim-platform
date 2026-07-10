@@ -166,6 +166,81 @@ def test_production_task_gates_reject_fake_routes(tmp_path: Path) -> None:
     assert fake_expert.status_code == 400
 
 
+def test_motrixsim_asset_import_is_admin_only_and_validated(tmp_path: Path) -> None:
+    config = PlatformConfig(
+        app_root=ROOT,
+        workspace_dir=tmp_path / "workspace",
+        worker_mode="api",
+        production_mode=True,
+        auth_enabled=True,
+        bootstrap_admin_password="Admin!Password123",
+    )
+    with TestClient(create_app(config)) as client:
+        assert client.post("/api/auth/login", json={"username": "admin", "password": "Admin!Password123"}).status_code == 200
+        assert client.post(
+            "/api/auth/change-password",
+            json={"current_password": "Admin!Password123", "new_password": "Changed!Password456"},
+        ).status_code == 200
+        assert client.post("/api/auth/login", json={"username": "admin", "password": "Changed!Password456"}).status_code == 200
+        assert client.post(
+            "/api/users",
+            json={"username": "asset.engineer", "password": "Engineer!Password123", "role": "engineer"},
+        ).status_code == 200
+        invalid = client.post(
+            "/api/tasks",
+            json={"type": "motrixsim_asset_import", "params": {"validation_steps": 0}},
+        )
+        assert invalid.status_code == 400
+        queued = client.post(
+            "/api/tasks",
+            json={"type": "motrixsim_asset_import", "params": {"validation_steps": 120, "max_parlour_meshes": 240}},
+        )
+        assert queued.status_code == 200
+        assert queued.json()["type"] == "motrixsim_asset_import"
+        assert client.post("/api/auth/logout").status_code == 200
+        assert client.post("/api/auth/login", json={"username": "asset.engineer", "password": "Engineer!Password123"}).status_code == 200
+        assert client.post(
+            "/api/auth/change-password",
+            json={"current_password": "Engineer!Password123", "new_password": "Engineer!Changed456"},
+        ).status_code == 200
+        assert client.post("/api/auth/login", json={"username": "asset.engineer", "password": "Engineer!Changed456"}).status_code == 200
+        forbidden = client.post("/api/tasks", json={"type": "motrixsim_asset_import", "params": {}})
+        assert forbidden.status_code == 403
+
+
+@pytest.mark.integration
+def test_runtime_required_validation_steps_mujoco_and_motrixsim(tmp_path: Path) -> None:
+    pytest.importorskip("mujoco")
+    pytest.importorskip("motrixsim")
+    package = tmp_path / "runtime-scene"
+    simulator_assets = package / "simulator_assets"
+    simulator_assets.mkdir(parents=True)
+    (package / "scene.json").write_text('{"schema":"motrixsim.scene.v1"}\n', encoding="utf-8")
+    (simulator_assets / "scene.xml").write_text(
+        '<mujoco model="runtime-validation"><option timestep="0.002"/><worldbody><geom type="plane" size="1 1 .1"/><body pos="0 0 .2"><freejoint/><geom type="sphere" size=".03" mass=".1"/></body></worldbody></mujoco>\n',
+        encoding="utf-8",
+    )
+    config = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace", allowed_path_roots=(tmp_path,))
+    with TestClient(create_app(config)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "type": "simulator_validation",
+                "params": {"scene_path": str(package), "simulators": ["mujoco", "motrixsim"], "level": "runtime_required"},
+            },
+        ).json()
+        for _ in range(80):
+            task = client.get(f"/api/tasks/{created['id']}").json()
+            if task["status"] in {"succeeded", "failed"}:
+                break
+            __import__("time").sleep(0.1)
+    assert task["status"] == "succeeded", task.get("error")
+    simulators = task["result"]["report"]["simulators"]
+    assert simulators["mujoco"]["runtime"]["status"] == "loaded"
+    assert simulators["motrixsim"]["runtime"]["status"] == "loaded_and_stepped"
+    assert simulators["motrixsim"]["runtime"]["steps"] == 8
+
+
 @pytest.mark.integration
 def test_real_rm65_physical_collection_writes_act_hdf5(tmp_path: Path) -> None:
     scene = ROOT / "workspace/motrixsim_assets/parlour_rm65_pick_place/simulator_assets/rm65_table_pick_place.xml"

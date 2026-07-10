@@ -24,7 +24,7 @@ const $ = (id) => document.getElementById(id);
 
 const taskScopes = {
   dataTaskList: ["hf_import", "media_prepare"],
-  sceneTaskList: ["scene_reconstruction", "reconstruction_preflight", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"],
+  sceneTaskList: ["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"],
   collectTaskList: ["expert_collection"],
   trainTaskList: ["training"],
   inferTaskList: ["inference"],
@@ -1172,6 +1172,7 @@ function taskTypeLabel(type) {
     media_prepare: "输入准备",
     reconstruction_preflight: "重建预检",
     scene_reconstruction: "场景重建",
+    motrixsim_asset_import: "MotrixSim 资产导入",
     simulator_validation: "仿真校验",
     renderer_benchmark: "渲染器对比",
     scene_cover_render: "场景封面",
@@ -1361,7 +1362,7 @@ function exportSummary(payload = {}) {
 
 function switchTaskPage(type) {
   if (["hf_import", "media_prepare"].includes(type)) switchTab("data");
-  else if (["scene_reconstruction", "reconstruction_preflight", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"].includes(type)) switchTab("reconstruct");
+  else if (["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"].includes(type)) switchTab("reconstruct");
   else if (type === "expert_collection") switchTab("collect");
   else if (type === "training") switchTab("train");
   else if (type === "inference") switchTab("infer");

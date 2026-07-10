@@ -707,7 +707,7 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
         payload = CreateTaskRequest(type=task_type, params=params)
         _validate_task_payload(payload, cfg)
         _validate_task_resources(store, payload)
-        if payload.type not in {"scene_reconstruction", "reconstruction_preflight", "media_prepare", "expert_collection", "training", "inference", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize", "hf_import", "bos_import", "simulator_validation"}:
+        if payload.type not in {"scene_reconstruction", "reconstruction_preflight", "media_prepare", "expert_collection", "training", "inference", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize", "hf_import", "bos_import", "motrixsim_asset_import", "simulator_validation"}:
             raise ValueError(f"unknown task type: {payload.type}")
         run_dir = cfg.runs_dir / payload.type / _next_run_name(cfg.runs_dir / payload.type, payload.type)
         return store.create_task(task_type=payload.type, params=payload.params, run_dir=run_dir)
@@ -821,7 +821,9 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.post("/api/tasks")
-    def create_task(payload: CreateTaskRequest) -> dict[str, Any]:
+    def create_task(payload: CreateTaskRequest, request: Request) -> dict[str, Any]:
+        if payload.type == "motrixsim_asset_import" and request.state.user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="仅管理员可以导入平台内置仿真资产")
         try:
             return _queue_task(payload.type, payload.params)
         except ValueError as exc:
@@ -1193,6 +1195,7 @@ def _task_type_label(task_type: str) -> str:
         "media_prepare": "媒体准备",
         "reconstruction_preflight": "重建预检",
         "scene_reconstruction": "场景重建",
+        "motrixsim_asset_import": "MotrixSim 资产导入",
         "simulator_validation": "仿真校验",
         "expert_collection": "专家采集",
         "training": "模型训练",
@@ -1211,6 +1214,11 @@ def _validate_task_payload(payload: CreateTaskRequest, cfg: PlatformConfig) -> N
             raise HTTPException(status_code=400, detail="bos_import requires prefix")
         if not 1 <= int(params.get("max_objects", 1000)) <= 1000:
             raise HTTPException(status_code=400, detail="max_objects must be between 1 and 1000")
+    if payload.type == "motrixsim_asset_import":
+        if not 1 <= int(params.get("validation_steps", 120)) <= 5000:
+            raise HTTPException(status_code=400, detail="validation_steps must be between 1 and 5000")
+        if not 1 <= int(params.get("max_parlour_meshes", 240)) <= 1000:
+            raise HTTPException(status_code=400, detail="max_parlour_meshes must be between 1 and 1000")
     if payload.type == "hf_import":
         repo_type = params.get("repo_type", "dataset")
         if repo_type != "dataset":

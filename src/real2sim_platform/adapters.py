@@ -171,6 +171,8 @@ def execute_task(config: PlatformConfig, store: PlatformStore, task: dict[str, A
         return run_hf_import(config, store, task, emit)
     if task_type == "bos_import":
         return run_bos_import(config, store, task, emit)
+    if task_type == "motrixsim_asset_import":
+        return run_motrixsim_asset_import(config, store, task, emit)
     if task_type == "simulator_validation":
         return run_simulator_validation(config, store, task, emit)
     if task_type == "expert_collection":
@@ -623,6 +625,105 @@ def run_bos_import(config: PlatformConfig, store: PlatformStore, task: dict[str,
     return {"dataset_id": dataset["id"], "dataset_path": str(out_dir), "storage_uri": source_uri, "object_count": len(objects), "checksum": digest}
 
 
+def run_motrixsim_asset_import(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
+    """Import the pinned MotrixSim package and prove both simulator runtimes load it."""
+    params = task["params"]
+    run_dir = Path(task["run_dir"])
+    report_path = run_dir / "motrixsim_asset_import_report.json"
+    source = Path(str(params.get("source") or "/opt/motrixsim-docs"))
+    scene_id = hashlib.sha1(b"motrixsim:parlour_rm65_pick_place").hexdigest()[:32]
+    scripts = config.app_root / "scripts"
+    import_script = scripts / "import_motrixsim_assets.py"
+    runtime_script = scripts / "generate_motrixsim_runtime_scene.py"
+    preview_script = scripts / "generate_motrixsim_preview.py"
+    missing = [str(path) for path in (import_script, runtime_script, preview_script) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("MotrixSim asset pipeline scripts are missing: " + ", ".join(missing))
+    if not source.is_dir():
+        raise FileNotFoundError(f"pinned MotrixSim source checkout not found: {source}")
+
+    env = _env_with_paths(config)
+    log_path = run_dir / "logs" / "task.log"
+    _task_progress(store, task, 15, "导入官方资产", "正在复制固定版本的 MotrixSim 客厅、RM65 与 pick-place 资产")
+    run_logged(
+        [
+            sys.executable,
+            str(import_script),
+            "--source",
+            str(source),
+            "--name",
+            str(params.get("name") or "MotrixSim 客厅 RM65 Pick-Place"),
+            "--replace-index",
+        ],
+        cwd=config.app_root,
+        log_path=log_path,
+        env=env,
+        store=store,
+        task_id=task["id"],
+    )
+
+    _task_progress(store, task, 48, "验证仿真运行时", "正在使用 MuJoCo 与 MotrixSim 真实加载并执行场景 step")
+    run_logged(
+        [sys.executable, str(runtime_script), "--scene-id", scene_id, "--steps", str(int(params.get("validation_steps", 120)))],
+        cwd=config.app_root,
+        log_path=log_path,
+        env=env,
+        store=store,
+        task_id=task["id"],
+    )
+
+    _task_progress(store, task, 72, "生成浏览器预览", "正在从官方网格资产生成可交互 GLB")
+    run_logged(
+        [sys.executable, str(preview_script), "--scene-id", scene_id, "--max-parlour-meshes", str(int(params.get("max_parlour_meshes", 240)))],
+        cwd=config.app_root,
+        log_path=log_path,
+        env=env,
+        store=store,
+        task_id=task["id"],
+    )
+
+    scene = store.get_scene(scene_id)
+    package_dir = Path(str((scene.get("metadata") or {}).get("package") or ""))
+    manifest_path = Path(str(scene.get("manifest_path") or ""))
+    if not package_dir.is_dir() or not manifest_path.is_file():
+        raise RuntimeError("MotrixSim asset pipeline completed without a valid scene package")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runtime_validation = (scene.get("metadata") or {}).get("runtime_validation") or {}
+    if runtime_validation.get("mujoco") is not True or runtime_validation.get("motrixsim") is not True:
+        raise RuntimeError(f"MotrixSim scene did not pass both runtimes: {runtime_validation}")
+    primary = ((manifest.get("viewer_assets") or {}).get("primary") or {})
+    preview_path = Path(str(primary.get("path") or ""))
+    if not preview_path.is_file() or preview_path.stat().st_size == 0:
+        raise RuntimeError("MotrixSim GLB preview was not generated")
+
+    report = {
+        "schema": "real2sim.motrixsim_asset_import_report.v1",
+        "status": "succeeded",
+        "scene_id": scene_id,
+        "source": str(source),
+        "source_commit": _git_head(source),
+        "package_dir": str(package_dir),
+        "manifest_path": str(manifest_path),
+        "preview_path": str(preview_path),
+        "preview_size_bytes": preview_path.stat().st_size,
+        "runtime_validation": runtime_validation,
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    store.add_artifact(task_id=task["id"], name=report_path.name, path=report_path, kind="json")
+    _index_artifacts(store, task["id"], package_dir)
+    _task_progress(store, task, 94, "登记场景资产", "官方资产、运行时报告和 GLB 预览已登记")
+    emit(f"MotrixSim asset package ready: scene_id={scene_id} preview={preview_path}")
+    return {
+        "scene_id": scene_id,
+        "scene_path": scene["path"],
+        "manifest_path": str(manifest_path),
+        "package_dir": str(package_dir),
+        "preview_path": str(preview_path),
+        "runtime_validation": runtime_validation,
+    }
+
+
 def run_simulator_validation(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
     params = task["params"]
     run_dir = Path(task["run_dir"])
@@ -645,6 +746,7 @@ def run_simulator_validation(config: PlatformConfig, store: PlatformStore, task:
     if "mujoco" in simulators:
         _task_progress(store, task, 45, "校验 MuJoCo", "正在检查 MJCF 并尝试运行时加载")
         candidates = [
+            root / "simulator_assets" / "rm65_table_pick_place.xml",
             root / "scene_mujoco.xml",
             root / "mujoco.xml",
             root / "scene.xml",
@@ -654,6 +756,7 @@ def run_simulator_validation(config: PlatformConfig, store: PlatformStore, task:
             *root.glob("*mujoco*.xml"),
             *root.glob("mjcf/*.xml"),
             *root.glob("mujoco/*.xml"),
+            *root.glob("simulator_assets/*.xml"),
         ]
         report["simulators"]["mujoco"] = _validate_mujoco_asset(candidates, level=level)
     if "motrixsim" in simulators:
@@ -662,10 +765,12 @@ def run_simulator_validation(config: PlatformConfig, store: PlatformStore, task:
             root / "motrix_scene.json",
             root / "motrix_import.json",
             root / "scene.json",
+            root / "simulator_assets" / "rm65_table_pick_place.xml",
             root / "motrixsim" / "motrix_import.json",
             root / "motrixsim" / "scene.json",
             *root.glob("*motrix*.json"),
             *root.glob("motrixsim/*.json"),
+            *root.glob("simulator_assets/*.xml"),
         ]
         report["simulators"]["motrixsim"] = _validate_motrixsim_asset(candidates, level=level)
     report["ok"] = all(item["ok"] for item in report["simulators"].values())
@@ -2638,24 +2743,60 @@ def _validate_mujoco_asset(candidates: list[Path], *, level: str) -> dict[str, A
 
 
 def _validate_motrixsim_asset(candidates: list[Path], *, level: str) -> dict[str, Any]:
-    result = _validate_sim_asset(candidates, required_suffix=".json")
-    if not result["ok"] or level == "smoke":
-        result["level_effective"] = "smoke"
-        return result
-    tooling = _motrixsim_tooling()
-    if not tooling["available"]:
-        result["runtime"] = {"status": "unavailable", "tooling": tooling}
-        result["level_effective"] = "smoke"
-        result["ok"] = result["ok"] and level != "runtime_required"
-        return result
-    result["runtime"] = {"status": "tooling_detected", "tooling": tooling}
-    result["level_effective"] = "runtime_if_available"
-    result["ok"] = True
-    return result
+    descriptor = _validate_sim_asset(candidates, required_suffix=".json")
+    if level == "smoke":
+        descriptor["level_effective"] = "smoke"
+        return descriptor
+    runtime_scene = next((path for path in candidates if path.is_file() and path.suffix.lower() == ".xml"), None)
+    if runtime_scene is None:
+        return {
+            "ok": False,
+            "path": descriptor.get("path"),
+            "descriptor": descriptor,
+            "level_effective": "runtime",
+            "runtime": {"status": "artifact_unavailable", "error": "no MJCF scene is available for MotrixSim runtime loading"},
+        }
+    try:
+        from motrixsim import SceneData, load_model, step  # type: ignore
+    except Exception as exc:
+        return {
+            "ok": level != "runtime_required" and bool(descriptor.get("ok")),
+            "path": str(runtime_scene),
+            "descriptor": descriptor,
+            "level_effective": "runtime_if_available",
+            "runtime": {"status": "unavailable", "error": str(exc), "tooling": _motrixsim_tooling()},
+        }
+    try:
+        model = load_model(str(runtime_scene))
+        data = SceneData(model)
+        for _ in range(8):
+            step(model, data)
+        return {
+            "ok": True,
+            "path": str(runtime_scene),
+            "descriptor": descriptor,
+            "level_effective": "runtime",
+            "runtime": {
+                "status": "loaded_and_stepped",
+                "steps": 8,
+                "timestep": float(model.options.timestep),
+                "nq": len(data.low.dof_positions),
+                "nv": len(data.low.dof_velocities),
+            },
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "path": str(runtime_scene),
+            "descriptor": descriptor,
+            "level_effective": "runtime",
+            "runtime": {"status": "failed", "error": f"{type(exc).__name__}: {exc}"},
+        }
 
 
 def _motrixsim_tooling() -> dict[str, Any]:
     candidates = [
+        Path("/opt/motrixsim-docs"),
         Path("/opt/Motphys/motrixsim-docs/examples/hello_motrixsim.py"),
         Path("/opt/Motphys/MotrixLab"),
         Path("/opt/Motphys/motrixsim_playground"),
@@ -2696,6 +2837,7 @@ def collect_task_reports(store: PlatformStore, task_id: str) -> dict[str, Any]:
         "reconstruction_command.json",
         "reconstruction_report.json",
         "validation_report.json",
+        "motrixsim_asset_import_report.json",
         "splat_optimization_report.json",
         "prepared_manifest.json",
         "dataset_manifest.json",
