@@ -27,6 +27,7 @@ from . import __version__
 from .adapters import SPARK_VENDOR_PATH, collect_task_reports, enrich_scene_manifest_assets, run_doctor, scan_dataset
 from .auth import AuthManager, AuthenticationError, SESSION_COOKIE, validate_password, validate_role, validate_username
 from .config import PlatformConfig, ensure_workspace, is_path_allowed, load_config, write_default_config
+from .source_revision import read_source_revision
 from .storage import BosStorage, StorageBoundaryError, StorageUnavailable, safe_object_name, sha256_file
 from .store import PlatformStore
 from .worker import TaskWorker
@@ -1409,12 +1410,7 @@ def _capabilities(cfg: PlatformConfig, storage: BosStorage, store: PlatformStore
 
 
 def _git_commit_full(root: Path) -> str:
-    if not root.is_dir():
-        return ""
-    try:
-        return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=3).strip()
-    except Exception:
-        return ""
+    return read_source_revision(root)
 
 
 def _module_available(name: str) -> bool:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from real2sim_platform.adapters import _act_task_config_source, index_artifacts_
 from real2sim_platform.rm65_controller import _write_preview_video, collect
 from real2sim_platform.runtime_gate import _motrixsim_assets_probe, runtime_key
 from real2sim_platform.server import create_app
+from real2sim_platform.source_revision import read_source_revision
 from real2sim_platform.storage import BosStorage, StorageBoundaryError, normalize_relative_path
 from real2sim_platform.store import PlatformStore
 
@@ -348,6 +350,41 @@ def test_runtime_key_changes_with_deployed_build(tmp_path: Path, monkeypatch: py
     first = runtime_key(config)
     monkeypatch.setenv("REAL2SIM_PLATFORM_BUILD_ID", "build-b")
     assert runtime_key(config) != first
+
+
+def test_source_revision_accepts_audited_archive_marker(tmp_path: Path) -> None:
+    root = tmp_path / "archive-source"
+    root.mkdir()
+    commit = "d67f47c084aba0e0cf422a8725235f8b9238655a"
+    (root / ".real2sim-source.json").write_text(
+        json.dumps(
+            {
+                "schema": "real2sim.source.v1",
+                "source": f"https://codeload.github.com/eust-w/DISCOVERSE/tar.gz/{commit}",
+                "commit": commit,
+                "archive_sha256": "c8fbd6ca571ce3d44a61c6d3903de956075ee28d29afdfbcfe2b3fcc4cdab350",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert read_source_revision(root) == commit
+
+
+def test_source_revision_rejects_unverified_archive_marker(tmp_path: Path) -> None:
+    root = tmp_path / "archive-source"
+    root.mkdir()
+    (root / ".real2sim-source.json").write_text(
+        json.dumps(
+            {
+                "schema": "real2sim.source.v1",
+                "source": "http://untrusted.invalid/archive.tar.gz",
+                "commit": "not-a-commit",
+                "archive_sha256": "not-a-checksum",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert read_source_revision(root) == ""
 
 
 def test_motrixsim_runtime_scene_uses_current_python_when_module_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:

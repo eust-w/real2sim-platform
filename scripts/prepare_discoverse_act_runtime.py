@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 from pathlib import Path
+
+from real2sim_platform.source_revision import read_source_revision
 
 
 OPTIONAL_IMPORT = "from airbot_data_collection.tools.av_coder import AvCoder"
@@ -28,7 +29,7 @@ def main() -> int:
     parser.add_argument("--expected-commit", required=True)
     args = parser.parse_args()
     root = args.act_root.resolve()
-    commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    commit = read_source_revision(root)
     if commit != args.expected_commit:
         raise SystemExit(f"ACT revision mismatch: expected {args.expected_commit}, got {commit}")
     target = root / "utils" / "utils.py"

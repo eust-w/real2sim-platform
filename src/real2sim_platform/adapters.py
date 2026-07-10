@@ -17,6 +17,7 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
 from .config import PlatformConfig
+from .source_revision import read_source_revision
 from .storage import ALLOWED_AREAS, BosStorage, normalize_relative_path
 from .store import PlatformStore
 
@@ -2016,10 +2017,7 @@ def _file_sha256(path: Path) -> str:
 
 
 def _git_head(root: Path) -> str:
-    try:
-        return subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
-    except Exception:
-        return ""
+    return read_source_revision(root)
 
 
 def _inspect_act_dataset(dataset_path: Path) -> dict[str, Any]:
