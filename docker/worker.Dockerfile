@@ -5,6 +5,7 @@ ARG DISCOVERSE_COMMIT=d67f47c084aba0e0cf422a8725235f8b9238655a
 ARG ACT_COMMIT=f8ab39c8d829d85571ab6d0250412ba4d0698fa0
 ARG DISCOVERSE_ARCHIVE_SHA256=c8fbd6ca571ce3d44a61c6d3903de956075ee28d29afdfbcfe2b3fcc4cdab350
 ARG ACT_ARCHIVE_SHA256=35c5dfc416ba0a5d7f10ad61252fa9f685ac4cf2b123cd6f1b3db1619a2b1b37
+ARG TORCH_SCATTER_SHA256=caab7dd4a8783d49b2a983331e93ebf968c9c76ff4daaca158e2f6fb9c8028bf
 ARG MOTRIXSIM_DOCS_COMMIT=2beecea67c81d25e29cefa30a80c0ddad7b44dde
 ARG VGGT_MODEL_REVISION=860abec7937da0a4c03c41d3c269c366e82abdf9
 
@@ -40,9 +41,14 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     python -m pip install --no-cache-dir torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/cu121 && \
     python -m pip install --no-cache-dir -c /tmp/worker-constraints.txt -r /tmp/anysplat-runtime-requirements.txt && \
     python -m pip install --no-cache-dir xformers==0.0.24 --no-deps && \
-    python -m pip install --no-cache-dir torch-scatter==2.1.2 -f https://data.pyg.org/whl/torch-2.2.0+cu121.html && \
     python -m pip install --no-cache-dir 'https://github.com/nerfstudio-project/gsplat/releases/download/v1.4.0/gsplat-1.4.0%2Bpt22cu121-cp310-cp310-linux_x86_64.whl' && \
     python -m pip install --no-cache-dir -c /tmp/worker-constraints.txt motrixsim-core==0.8.0
+
+RUN curl -fL --retry 8 --retry-all-errors --retry-delay 2 --connect-timeout 20 --max-time 300 --speed-limit 1024 --speed-time 30 \
+      -o '/tmp/torch_scatter-2.1.2+pt22cu121-cp310-cp310-linux_x86_64.whl' 'https://data.pyg.org/whl/torch-2.2.0%2Bcu121/torch_scatter-2.1.2%2Bpt22cu121-cp310-cp310-linux_x86_64.whl' && \
+    echo "${TORCH_SCATTER_SHA256}  /tmp/torch_scatter-2.1.2+pt22cu121-cp310-cp310-linux_x86_64.whl" | sha256sum -c - && \
+    python -m pip install --no-cache-dir --no-deps '/tmp/torch_scatter-2.1.2+pt22cu121-cp310-cp310-linux_x86_64.whl' && \
+    rm -f '/tmp/torch_scatter-2.1.2+pt22cu121-cp310-cp310-linux_x86_64.whl'
 
 RUN git clone --filter=blob:none --no-checkout https://github.com/InternRobotics/AnySplat.git /opt/real2sim_paper_runtime/AnySplat && \
     git -C /opt/real2sim_paper_runtime/AnySplat checkout "${ANYSPLAT_COMMIT}" && \
