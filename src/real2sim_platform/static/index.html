@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Real2Sim</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css?v=20260710-motrix-runtime-v7">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <strong>Real2Sim</strong>
+        <span>真实数据到仿真智能体</span>
+      </div>
+      <nav class="side-nav" aria-label="主导航">
+        <button class="tab active" data-tab="overview">总览</button>
+        <button class="tab" data-tab="data">数据管理</button>
+        <button class="tab" data-tab="reconstruct">场景重建</button>
+        <button class="tab" data-tab="scenes">场景管理</button>
+        <button class="tab" data-tab="collect">数据采集</button>
+        <button class="tab" data-tab="train">模型训练</button>
+        <button class="tab" data-tab="infer">在线推理</button>
+      </nav>
+    </aside>
+
+    <main class="main-surface">
+      <section id="overview" class="page active page-dashboard">
+        <div class="page-head">
+          <div>
+            <h1>总览</h1>
+            <p>按数据准备、场景重建、专家采集、训练和推理组织当前项目资源。</p>
+          </div>
+          <button id="nextStepAction" class="primary-button">继续下一步</button>
+        </div>
+
+        <div class="overview-grid">
+          <section class="panel journey-panel">
+            <div class="panel-head">
+              <div>
+                <h2>我的流程</h2>
+                <p>从真实数据到在线推理的当前进度</p>
+              </div>
+            </div>
+            <div class="journey" id="journeySteps"></div>
+          </section>
+
+          <section class="panel next-step">
+            <div class="panel-head">
+              <div>
+                <h2>推荐下一步</h2>
+                <p id="nextStepText">正在读取当前资源状态</p>
+              </div>
+            </div>
+            <div id="overviewMetrics" class="metric-strip"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>最近任务</h2>
+                <p>显示真实阶段、进度和失败原因</p>
+              </div>
+            </div>
+            <div id="recentTaskList" class="list-stack compact-list"></div>
+          </section>
+
+          <section class="panel wide scene-hero-panel">
+            <div class="panel-head">
+              <div>
+                <h2>最近场景</h2>
+                <p>重建完成后可直接进入预览和资产增强</p>
+              </div>
+            </div>
+            <div id="overviewScenePreview" class="overview-scene"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>模型与推理</h2>
+                <p>训练结果、模型指标和最近推理轨迹</p>
+              </div>
+            </div>
+            <div id="latestModelCard" class="model-summary"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="data" class="page page-data">
+        <div class="page-head">
+          <div>
+            <h1>数据管理</h1>
+            <p>导入数据、抽帧准备、预检质量，并把可用数据集交给重建或训练流程。</p>
+          </div>
+          <button class="primary-button" data-open-import="hf">新增数据</button>
+        </div>
+
+        <div class="source-grid">
+          <button class="source-card" data-open-import="hf">
+            <strong>HuggingFace 样例</strong>
+            <span>xarm7、3DGS fixture 和公开数据集</span>
+          </button>
+          <button class="source-card" data-open-import="upload">
+            <strong>上传文件</strong>
+            <span>zip、视频或图片包</span>
+          </button>
+          <button class="source-card" data-open-import="local">
+            <strong>本地目录</strong>
+            <span>从配置白名单导入已有数据</span>
+          </button>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>数据集</h2>
+              <p>多选后可批量准备、预检或删除索引</p>
+            </div>
+            <div class="toolbar">
+              <select id="datasetFilter" aria-label="筛选数据集">
+                <option value="all">全部数据</option>
+                <option value="prepared_media">已准备帧数据</option>
+                <option value="expert_collection">采集数据</option>
+                <option value="huggingface">HuggingFace</option>
+              </select>
+              <input id="datasetSearch" placeholder="搜索数据集名称">
+            </div>
+          </div>
+          <div class="bulk-bar" data-bulk-resource-scope="datasetList">
+            <label><input type="checkbox" data-select-all-resources="datasetList"> 全选</label>
+            <span data-selected-count="datasetList">已选择 0 项</span>
+            <button data-bulk-resource-action="prepare">批量准备</button>
+            <button data-bulk-resource-action="preflight">批量预检</button>
+            <button class="danger-button" data-bulk-resource-action="delete">批量删除</button>
+          </div>
+          <div class="table-shell dataset-shell">
+            <div class="table-header dataset-header">
+              <span></span><span>缩略图</span><span>数据集名称</span><span>来源</span><span>规模</span><span>操作</span>
+            </div>
+            <div id="datasetList" class="resource-table"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>准备输入</h2>
+              <p>将视频或图片目录整理成可重建帧数据</p>
+            </div>
+            <button id="createMediaPrepare" class="primary-button">创建准备任务</button>
+          </div>
+          <div class="form-grid">
+            <label class="span-2">原始数据集<select id="prepareDataset"></select></label>
+            <label>相机视角<input id="prepareCamera" value="observation.images.front"></label>
+            <label>每秒抽帧<input id="prepareFps" type="number" min="0.1" step="0.1" value="2"></label>
+            <label>每段最多帧<input id="prepareMaxFrames" type="number" min="1" value="80"></label>
+            <label>最多视频数<input id="prepareMaxVideos" type="number" min="1" value="1"></label>
+            <label>目标总帧数<input id="prepareTargetFrames" type="number" min="0" value="0"></label>
+            <label>最低总帧数<input id="prepareMinFrames" type="number" min="0" value="0"></label>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>数据任务</h2>
+              <p>导入、上传和准备任务会在这里反馈进度</p>
+            </div>
+          </div>
+          <div class="bulk-bar" data-bulk-scope="dataTaskList">
+            <label><input type="checkbox" data-select-all-tasks="dataTaskList"> 全选</label>
+            <span data-selected-count="dataTaskList">已选择 0 项</span>
+            <button data-bulk-task-action="retry">批量重试</button>
+            <button data-bulk-task-action="cancel">批量取消</button>
+            <button class="danger-button" data-bulk-task-action="delete">批量删除</button>
+          </div>
+          <div id="dataTaskList" class="list-stack"></div>
+        </section>
+      </section>
+
+      <section id="reconstruct" class="page page-reconstruct">
+        <div class="page-head">
+          <div>
+            <h1>场景重建</h1>
+            <p>场景重建负责生成新的点云、网格、场景包和仿真导入产物；完成后进入场景管理继续预览和增强。</p>
+          </div>
+          <button id="createSceneTask" class="primary-button">开始重建</button>
+        </div>
+
+        <div class="reconstruct-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>重建配置</h2>
+                <p>先选 prepared 数据，再选择质量、几何和仿真策略</p>
+              </div>
+            </div>
+            <div id="reconstructDatasetCards" class="selection-card-rail"></div>
+            <div class="form-grid">
+              <label class="span-2">场景名称<input id="sceneName" placeholder="例如 Playroom 高质量重建"></label>
+              <label class="span-2">已准备数据集<select id="reconstructInput"></select></label>
+              <label>重建预设<select id="qualityPreset"><option value="discoverse-high">DISCOVERSE 高质量</option><option value="motrix-high">仿真优先</option><option value="balanced">平衡</option></select></label>
+              <label>渲染方式<select id="rendererSelect"><option value="auto">自动选择</option><option value="spark">Spark 预览</option><option value="aholo">Aholo LOD</option></select></label>
+              <label>仿真器<select id="simulatorSelect"><option value="both">MuJoCo + MotrixSim</option><option value="mujoco">MuJoCo</option><option value="motrixsim">MotrixSim</option></select></label>
+              <label>最少帧数<input id="sceneMinFrames" type="number" min="1" value="30"></label>
+              <label>验收标准<select id="acceptanceLevel"><option value="balanced">平衡</option><option value="strict">严格</option><option value="preview">仅预览</option></select></label>
+            </div>
+
+            <details class="option-group">
+              <summary>高级重建参数</summary>
+              <div class="form-grid">
+                <label>相机模型<select id="cameraModel"><option value="auto">自动识别</option><option value="SIMPLE_RADIAL">SIMPLE_RADIAL</option><option value="PINHOLE">PINHOLE</option><option value="OPENCV">OPENCV</option></select></label>
+                <label>匹配策略<select id="matcherSelect"><option value="exhaustive">全量匹配</option><option value="sequential">顺序匹配</option></select></label>
+                <label>最大图像边<input id="maxImageSize" type="number" min="512" step="128" value="1600"></label>
+                <label>SIFT 特征数<input id="siftFeatures" type="number" min="1000" step="1000" value="8192"></label>
+                <label>顺序重叠帧<input id="sequentialOverlap" type="number" min="1" value="12"></label>
+                <label>AnySplat 视角数<input id="anysplatMaxViews" type="number" min="8" step="8" value="80"></label>
+                <label>训练步数<input id="poseTrainSteps" type="number" min="1000" step="1000" value="15000"></label>
+                <label>目标高斯数<input id="targetGaussians" type="number" min="100000" step="100000" value="1500000"></label>
+                <label>尺度参考<select id="scaleHint"><option value="auto">自动估计</option><option value="metric_room">房间尺度</option><option value="tabletop">桌面尺度</option><option value="robot_workspace">机器人工作区</option></select></label>
+                <label>坐标系<select id="coordinateFrame"><option value="gs_metric_zup">Z-up 米制</option><option value="mujoco_zup">MuJoCo Z-up</option><option value="motrixsim_world">MotrixSim World</option></select></label>
+                <label class="check"><input id="autoPrepareScene" type="checkbox"> 自动准备输入</label>
+                <label class="check"><input id="allowLowQualityScene" type="checkbox"> 允许低质量继续</label>
+                <label class="check"><input id="guidedMatching" type="checkbox" checked> 引导匹配</label>
+                <label class="check"><input id="poseInitTrain" type="checkbox" checked> 位姿初始化训练</label>
+                <label class="check"><input id="replaceSceneWithPoseTrain" type="checkbox" checked> 用训练结果替换主场景</label>
+                <label class="check"><input id="exportTextures" type="checkbox" checked> 生成纹理资产</label>
+                <label class="check"><input id="keepIntermediate" type="checkbox" checked> 保留中间产物</label>
+                <label class="check muted-check"><input id="dryRunScene" type="checkbox"> 仅生成样例</label>
+              </div>
+            </details>
+
+            <div class="button-row">
+              <button id="createPreflightTask">只做预检</button>
+              <button id="rendererBenchmark">渲染器对比</button>
+            </div>
+          </section>
+
+          <section class="panel preflight-panel">
+            <div class="panel-head">
+              <div>
+                <h2>质量预检</h2>
+                <p>帧数、输入类型、验收档位和运行建议</p>
+              </div>
+            </div>
+            <div id="preflightSummary" class="quality-grid"></div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>重建任务与预览</h2>
+              <p>任务创建后立即出现在这里；成功后可直接预览</p>
+            </div>
+          </div>
+          <div class="bulk-bar" data-bulk-scope="sceneTaskList">
+            <label><input type="checkbox" data-select-all-tasks="sceneTaskList"> 全选</label>
+            <span data-selected-count="sceneTaskList">已选择 0 项</span>
+            <button data-bulk-task-action="retry">批量重试</button>
+            <button data-bulk-task-action="cancel">批量取消</button>
+            <button class="danger-button" data-bulk-task-action="delete">批量删除</button>
+          </div>
+          <div id="sceneTaskList" class="list-stack"></div>
+        </section>
+      </section>
+
+      <section id="scenes" class="page">
+        <div class="page-head">
+          <div>
+            <h1>场景管理</h1>
+            <p>场景管理用于查看重建结果、添加资产、仿真校验、导出，并绑定后续采集和推理。</p>
+          </div>
+          <button id="validateSelectedScenes" class="primary-button">校验已选场景</button>
+        </div>
+
+        <div class="scene-workbench">
+          <section class="panel scene-library">
+            <div class="panel-head">
+              <div>
+                <h2>场景库</h2>
+                <p>多选后可校验、导出或删除索引</p>
+              </div>
+            </div>
+            <div class="bulk-bar" data-bulk-resource-scope="sceneList">
+              <label><input type="checkbox" data-select-all-resources="sceneList"> 全选</label>
+              <span data-selected-count="sceneList">已选择 0 项</span>
+              <button data-bulk-resource-action="validate">批量校验</button>
+              <button data-bulk-resource-action="export">批量导出</button>
+              <button class="danger-button" data-bulk-resource-action="delete">批量删除</button>
+            </div>
+            <div id="sceneList" class="resource-table scene-list"></div>
+          </section>
+
+          <section class="panel viewer-panel">
+            <div class="panel-head">
+              <div>
+                <h2>场景预览</h2>
+                <p id="viewerStatus">选择场景后加载 Spark/Three 预览</p>
+              </div>
+              <button id="openSceneViewerFull" class="ghost-button" type="button">最大化预览</button>
+            </div>
+            <iframe id="scenePreview" title="场景预览"></iframe>
+          </section>
+
+          <section class="panel asset-editor-panel">
+            <div class="panel-head">
+              <div>
+                <h2>场景增强</h2>
+                <p>从当前场景包选择资产，或在高级入口导入白名单文件</p>
+              </div>
+              <button id="addSceneAsset" class="primary-button">添加资产</button>
+            </div>
+            <div class="form-grid">
+              <label class="span-2">目标场景<select id="assetScene"></select></label>
+              <label class="span-2">资产来源<select id="assetPreset"></select></label>
+              <details class="span-2 option-group">
+                <summary>高级：从白名单路径添加新资产</summary>
+                <label>资产文件<input id="assetPath" placeholder="仅支持配置白名单内文件"></label>
+              </details>
+              <label>显示名称<input id="assetName" placeholder="例如柜体碰撞模型"></label>
+              <label>资产类型<select id="assetKind"><option value="auto">自动识别</option><option value="mesh">网格 / 物体</option><option value="splat_or_pointcloud">点云 / Splat</option><option value="texture">纹理</option><option value="simulator">仿真文件</option><option value="metadata">配置 / 元数据</option></select></label>
+              <label>用途<select id="assetRole"><option value="added_asset">新增资产</option><option value="collision">碰撞体</option><option value="visual">可视化模型</option><option value="texture">纹理贴图</option><option value="simulator_import">仿真导入</option></select></label>
+              <label>尺度<input id="assetScale" type="number" min="0.001" step="0.001" value="1"></label>
+              <label>位置 X<input id="assetPosX" type="number" step="0.01" value="0"></label>
+              <label>位置 Y<input id="assetPosY" type="number" step="0.01" value="0"></label>
+              <label>位置 Z<input id="assetPosZ" type="number" step="0.01" value="0"></label>
+              <label>朝向 Yaw<input id="assetYaw" type="number" step="1" value="0"></label>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>资产清单</h2>
+              <p>点云、网格、纹理、相机和仿真产物</p>
+            </div>
+          </div>
+          <div id="assetRail" class="asset-grid"></div>
+        </section>
+      </section>
+
+      <section id="collect" class="page">
+        <div class="page-head">
+          <div>
+            <h1>数据采集</h1>
+            <p>选择已重建场景和专家策略，批量生成可训练的 rollout 数据。</p>
+          </div>
+          <button id="createCollectTask" class="primary-button">开始采集</button>
+        </div>
+
+        <div class="two-column">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>采集配置</h2>
+                <p>场景、策略和 rollout 规模</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label class="span-2">选择场景<select id="collectScene"></select></label>
+              <label>专家策略<select id="policyPreset"><option value="pick_and_place_v1">抓取放置策略</option><option value="navigation_v1" disabled>导航采集策略（待接入）</option><option value="manipulation_v2" disabled>精细操作策略（待接入）</option></select></label>
+              <label>执行并发<input id="collectWorkers" type="number" min="1" max="1" value="1" disabled title="当前专家采集执行器仅支持单 worker"></label>
+              <label>Episode 数<input id="episodes" type="number" value="4"></label>
+              <label>每个 Episode 步数<input id="steps" type="number" value="24"></label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>采集数据集</h2>
+                <p>生成后可直接用于模型训练</p>
+              </div>
+            </div>
+            <div id="collectionDatasetList" class="resource-table compact-table"></div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>采集任务</h2>
+              <p>支持多选取消、重试、删除和查看产物</p>
+            </div>
+          </div>
+          <div class="bulk-bar" data-bulk-scope="collectTaskList">
+            <label><input type="checkbox" data-select-all-tasks="collectTaskList"> 全选</label>
+            <span data-selected-count="collectTaskList">已选择 0 项</span>
+            <button data-bulk-task-action="retry">批量重试</button>
+            <button data-bulk-task-action="cancel">批量取消</button>
+            <button class="danger-button" data-bulk-task-action="delete">批量删除</button>
+          </div>
+          <div id="collectTaskList" class="list-stack"></div>
+        </section>
+      </section>
+
+      <section id="train" class="page">
+        <div class="page-head">
+          <div>
+            <h1>模型训练</h1>
+            <p>基于专家采集数据训练策略模型，并追踪指标、模型卡和导出产物。</p>
+          </div>
+          <button id="createTrainTask" class="primary-button">开始训练</button>
+        </div>
+
+        <div class="two-column">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>训练配置</h2>
+                <p>选择训练数据和配方</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label class="span-2">训练数据集<select id="trainDataset"></select></label>
+              <label>训练配方<select id="trainRecipe"><option value="bc_v2">行为克隆 v2</option><option value="bc_fast">快速验证</option><option value="diffusion_policy" disabled>扩散策略（待接入）</option></select></label>
+              <label>Epoch 数<input id="epochs" type="number" value="100"></label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>训练指标</h2>
+                <p>成功率、损失和验证集表现</p>
+              </div>
+            </div>
+            <div id="trainingChart" class="chart-panel"></div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>训练任务</h2>
+              <p>查看训练进度和模型产物</p>
+            </div>
+          </div>
+          <div class="bulk-bar" data-bulk-scope="trainTaskList">
+            <label><input type="checkbox" data-select-all-tasks="trainTaskList"> 全选</label>
+            <span data-selected-count="trainTaskList">已选择 0 项</span>
+            <button data-bulk-task-action="retry">批量重试</button>
+            <button data-bulk-task-action="cancel">批量取消</button>
+            <button class="danger-button" data-bulk-task-action="delete">批量删除</button>
+          </div>
+          <div id="trainTaskList" class="list-stack"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>模型列表</h2>
+              <p>多选后可对比、导出或删除索引</p>
+            </div>
+          </div>
+          <div class="bulk-bar" data-bulk-resource-scope="modelList">
+            <label><input type="checkbox" data-select-all-resources="modelList"> 全选</label>
+            <span data-selected-count="modelList">已选择 0 项</span>
+            <button data-bulk-resource-action="compare">批量对比</button>
+            <button data-bulk-resource-action="export">批量导出</button>
+            <button class="danger-button" data-bulk-resource-action="delete">批量删除</button>
+          </div>
+          <div id="modelList" class="model-grid"></div>
+          <div id="modelCompareResult" class="compare-result"></div>
+        </section>
+      </section>
+
+      <section id="infer" class="page">
+        <div class="page-head">
+          <div>
+            <h1>在线推理</h1>
+            <p>选择模型和场景运行在线推理，查看 rollout 播放、轨迹产物和对比结果。</p>
+          </div>
+          <button id="createInferTask" class="primary-button">开始推理</button>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>推理配置</h2>
+              <p>模型、场景和 rollout 参数</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <label>选择模型<select id="inferModel"></select></label>
+            <label>选择场景<select id="inferScene"></select></label>
+            <label>步数上限<input id="inferSteps" type="number" min="1" value="80"></label>
+            <label>执行并发<input id="inferWorkers" type="number" min="1" max="1" value="1" disabled title="当前推理执行器仅支持单 worker"></label>
+          </div>
+        </section>
+
+        <div class="two-column">
+          <section class="panel rollout-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Rollout 回放</h2>
+                <p>推理完成后展示 viewer 或轨迹预览</p>
+              </div>
+            </div>
+            <div id="rolloutPreview" class="rollout-preview"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>轨迹产物</h2>
+                <p>rollout、viewer 和模型输出</p>
+              </div>
+            </div>
+            <div id="trajectoryList" class="list-stack"></div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>推理任务</h2>
+              <p>支持多选处理、重试和删除</p>
+            </div>
+          </div>
+          <div class="bulk-bar" data-bulk-scope="inferTaskList">
+            <label><input type="checkbox" data-select-all-tasks="inferTaskList"> 全选</label>
+            <span data-selected-count="inferTaskList">已选择 0 项</span>
+            <button data-bulk-task-action="retry">批量重试</button>
+            <button data-bulk-task-action="cancel">批量取消</button>
+            <button class="danger-button" data-bulk-task-action="delete">批量删除</button>
+          </div>
+          <div id="inferTaskList" class="list-stack"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <aside id="taskDrawer" class="task-drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <span>任务详情</span>
+        <h2 id="drawerTitle">未选择任务</h2>
+      </div>
+      <button id="closeDrawer" class="ghost-button">关闭</button>
+    </div>
+    <div id="drawerBody"></div>
+  </aside>
+
+  <dialog id="importDialog">
+    <form id="importForm" class="dialog-card">
+      <div class="panel-head">
+        <div>
+          <h2 id="importTitle">新增数据</h2>
+          <p id="importSubtitle">选择来源后提交导入任务</p>
+        </div>
+        <button type="button" data-close-dialog="importDialog" class="ghost-button">关闭</button>
+      </div>
+      <div id="importFields" class="form-grid"></div>
+      <menu>
+        <button type="button" data-close-dialog="importDialog">取消</button>
+        <button id="submitImport" type="submit" class="primary-button">提交</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="editDialog">
+    <form id="editForm" class="dialog-card">
+      <div class="panel-head">
+        <div>
+          <h2 id="editTitle">编辑</h2>
+          <p id="editSubtitle">更新名称、批次和标签</p>
+        </div>
+        <button type="button" data-close-dialog="editDialog" class="ghost-button">关闭</button>
+      </div>
+      <div id="editFields" class="form-grid"></div>
+      <menu>
+        <button type="button" data-close-dialog="editDialog">取消</button>
+        <button id="saveEdit" type="submit" class="primary-button">保存</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/static/app.js?v=20260710-motrix-runtime-v7"></script>
+</body>
+</html>
