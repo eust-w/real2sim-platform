@@ -14,6 +14,10 @@ from typing import Any
 import numpy as np
 
 
+CONTROL_HOLD_STEPS = 35
+ACTION_ALIGNMENT = "observation_t_to_action_t"
+
+
 @dataclass
 class EpisodeResult:
     success: bool
@@ -117,17 +121,18 @@ class RM65PickPlaceRuntime:
                 action = np.empty(7, dtype=np.float32)
                 action[:6] = start_ctrl * (1 - alpha) + target_q * alpha
                 action[6] = gripper
+                self.renderer.update_scene(self.data, camera="overview")
+                frame = self.renderer.render().copy()
+                observation = np.concatenate([self.data.qpos[self.qpos_adrs], [self.data.qpos[self.gripper_qadr]]]).astype(np.float32)
+                cube_before = self.data.qpos[self.cube_qadr : self.cube_qadr + 3].astype(float).copy()
                 self.data.ctrl[:7] = action
                 # The RM65 model has conservative actuator force limits; each policy
                 # command is held long enough for the physical joints to settle.
-                for _ in range(35):
+                for _ in range(CONTROL_HOLD_STEPS):
                     mujoco.mj_step(self.model, self.data)
                 touching = self.finger_contacts()
                 bilateral_contact_steps += int(len(touching) == 2)
                 max_cube_z = max(max_cube_z, float(self.data.qpos[self.cube_qadr + 2]))
-                self.renderer.update_scene(self.data, camera="overview")
-                frame = self.renderer.render().copy()
-                observation = np.concatenate([self.data.qpos[self.qpos_adrs], [self.data.qpos[self.gripper_qadr]]]).astype(np.float32)
                 observations.append(observation)
                 actions.append(action.copy())
                 contacts.append(np.array([int(geom in touching) for geom in sorted(self.finger_geoms)], dtype=np.uint8))
@@ -139,6 +144,8 @@ class RM65PickPlaceRuntime:
                         "phase": phase,
                         "qpos": observation.tolist(),
                         "action": action.tolist(),
+                        "action_alignment": ACTION_ALIGNMENT,
+                        "cube_pos_before": cube_before.tolist(),
                         "cube_pos": self.data.qpos[self.cube_qadr : self.cube_qadr + 3].astype(float).tolist(),
                         "gripper_pos": self.data.site_xpos[self.site_id].astype(float).tolist(),
                         "bilateral_contact": len(touching) == 2,
@@ -256,6 +263,8 @@ def collect(scene_path: Path, out_dir: Path, *, required_successes: int, max_att
         "scene": str(scene_path),
         "camera_names": ["overview"],
         "image_encoding": {"codec": "jpeg", "semantic_color_order": "RGB", "opencv_decode_color_order": "BGR"},
+        "action_alignment": ACTION_ALIGNMENT,
+        "control_hold_steps": CONTROL_HOLD_STEPS,
         "state_dim": 7,
         "action_dim": 7,
         "required_successes": required_successes,
@@ -289,6 +298,8 @@ def _write_hdf5_episode(path: Path, result: EpisodeResult) -> None:
         root.attrs["success"] = bool(result.success)
         root.attrs["image_color_order"] = "RGB"
         root.attrs["opencv_decode_color_order"] = "BGR"
+        root.attrs["action_alignment"] = ACTION_ALIGNMENT
+        root.attrs["control_hold_steps"] = CONTROL_HOLD_STEPS
         root.create_dataset("/observations/qpos", data=observations, dtype="f4")
         root.create_dataset("/action", data=actions, dtype="f4")
         root.create_dataset("/observations/contact", data=contacts, dtype="u1")

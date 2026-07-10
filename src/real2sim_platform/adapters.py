@@ -1069,6 +1069,8 @@ def _run_discoverse_act_training(config: PlatformConfig, store: PlatformStore, t
             "state_dim": dataset_info["state_dim"],
             "action_dim": dataset_info["action_dim"],
             "image_color_order": "RGB (OpenCV-decoded BGR is converted by the generated ACT augmentor)",
+            "action_alignment": dataset_info["action_alignment"],
+            "control_hold_steps": dataset_info["control_hold_steps"],
             "config_path": str(config_path),
             "runtime_compatibility": "HDF5 ACT training; AIRBOT MCAP/hardware codecs remain optional and fail explicitly when requested",
         },
@@ -2032,6 +2034,8 @@ def _inspect_act_dataset(dataset_path: Path) -> dict[str, Any]:
     cameras: list[str] = []
     state_dim = 0
     action_dim = 0
+    action_alignment = ""
+    control_hold_steps = 0
     for path in episodes:
         with h5py.File(path, "r") as root:
             if "/observations/qpos" not in root or "/action" not in root or "/observations/images" not in root:
@@ -2039,12 +2043,24 @@ def _inspect_act_dataset(dataset_path: Path) -> dict[str, Any]:
             current_cameras = sorted(str(name) for name in root["/observations/images"].keys())
             current_state_dim = int(root["/observations/qpos"].shape[1])
             current_action_dim = int(root["/action"].shape[1])
+            current_alignment = str(root.attrs.get("action_alignment", ""))
+            current_hold_steps = int(root.attrs.get("control_hold_steps", 0))
+            if current_alignment != "observation_t_to_action_t" or current_hold_steps <= 0:
+                raise ValueError(f"ACT HDF5 不是因果 observation_t -> action_t 数据: {path.name}")
             if not cameras:
                 cameras = current_cameras
                 state_dim = current_state_dim
                 action_dim = current_action_dim
-            if current_cameras != cameras or current_state_dim != state_dim or current_action_dim != action_dim:
-                raise ValueError("ACT 数据集的相机、状态维度或动作维度不一致")
+                action_alignment = current_alignment
+                control_hold_steps = current_hold_steps
+            if (
+                current_cameras != cameras
+                or current_state_dim != state_dim
+                or current_action_dim != action_dim
+                or current_alignment != action_alignment
+                or current_hold_steps != control_hold_steps
+            ):
+                raise ValueError("ACT 数据集的相机、状态维度、动作维度或控制周期不一致")
             length = int(root["/action"].shape[0])
             if length < 2:
                 raise ValueError(f"ACT episode 过短: {path.name}")
@@ -2055,6 +2071,8 @@ def _inspect_act_dataset(dataset_path: Path) -> dict[str, Any]:
         "camera_names": cameras,
         "state_dim": state_dim,
         "action_dim": action_dim,
+        "action_alignment": action_alignment,
+        "control_hold_steps": control_hold_steps,
     }
 
 

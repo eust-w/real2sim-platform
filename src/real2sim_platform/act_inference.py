@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from .rm65_controller import RM65PickPlaceRuntime, _write_preview_video
+from .rm65_controller import ACTION_ALIGNMENT, CONTROL_HOLD_STEPS, RM65PickPlaceRuntime, _write_preview_video
 
 
 def load_policy(model_dir: Path, act_root: Path, max_timesteps: int):
@@ -90,7 +90,7 @@ def infer(
                 for index in range(7):
                     action[index] = np.clip(action[index], runtime.ctrl_ranges[index, 0], runtime.ctrl_ranges[index, 1])
                 runtime.data.ctrl[:7] = action
-                for _ in range(10):
+                for _ in range(CONTROL_HOLD_STEPS):
                     runtime.mujoco.mj_step(runtime.model, runtime.data)
                 touching = runtime.finger_contacts()
                 bilateral_steps += int(len(touching) == 2)
@@ -138,6 +138,8 @@ def infer(
         "episodes": results,
         "success_rate": success_rate,
         "minimum_success_rate": minimum_success_rate,
+        "action_alignment": ACTION_ALIGNMENT,
+        "control_hold_steps": CONTROL_HOLD_STEPS,
         "action_std": action_std,
         "actions_nonconstant": nonconstant,
         "pass": success_rate >= minimum_success_rate and nonconstant,

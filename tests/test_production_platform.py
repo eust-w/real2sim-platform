@@ -12,8 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from real2sim_platform.config import PlatformConfig
-from real2sim_platform.adapters import _act_task_config_source, index_artifacts_for_task
-from real2sim_platform.rm65_controller import _write_preview_video, collect
+from real2sim_platform.adapters import _act_task_config_source, _inspect_act_dataset, index_artifacts_for_task
+from real2sim_platform.rm65_controller import ACTION_ALIGNMENT, CONTROL_HOLD_STEPS, _write_preview_video, collect
 from real2sim_platform.runtime_gate import _motrixsim_assets_probe, runtime_key
 from real2sim_platform.server import create_app
 from real2sim_platform.source_revision import read_source_revision
@@ -328,6 +328,22 @@ def test_generated_act_config_converts_opencv_bgr_to_rgb(tmp_path: Path) -> None
     assert "return image[:, [2, 1, 0], ...]" in source
 
 
+def test_act_training_rejects_noncausal_hdf5_and_records_control_cycle(tmp_path: Path) -> None:
+    episode = tmp_path / "episode_0.hdf5"
+    with h5py.File(episode, "w") as root:
+        root.create_dataset("/observations/qpos", data=np.zeros((2, 7), dtype=np.float32))
+        root.create_dataset("/action", data=np.zeros((2, 7), dtype=np.float32))
+        root.create_dataset("/observations/images/overview", data=np.zeros((2, 4), dtype=np.uint8))
+    with pytest.raises(ValueError, match="不是因果"):
+        _inspect_act_dataset(tmp_path)
+    with h5py.File(episode, "r+") as root:
+        root.attrs["action_alignment"] = ACTION_ALIGNMENT
+        root.attrs["control_hold_steps"] = CONTROL_HOLD_STEPS
+    inspected = _inspect_act_dataset(tmp_path)
+    assert inspected["action_alignment"] == ACTION_ALIGNMENT
+    assert inspected["control_hold_steps"] == CONTROL_HOLD_STEPS
+
+
 def test_runtime_gate_rejects_unresolved_motrixsim_lfs_pointer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "motrixsim-docs"
     required = [
@@ -483,4 +499,6 @@ def test_real_rm65_physical_collection_writes_act_hdf5(tmp_path: Path) -> None:
         assert bool(root.attrs["success"]) is True
         assert root.attrs["image_color_order"] == "RGB"
         assert root.attrs["opencv_decode_color_order"] == "BGR"
+        assert root.attrs["action_alignment"] == ACTION_ALIGNMENT
+        assert root.attrs["control_hold_steps"] == CONTROL_HOLD_STEPS
     assert (tmp_path / "collection/episode_0.mp4").stat().st_size > 0
