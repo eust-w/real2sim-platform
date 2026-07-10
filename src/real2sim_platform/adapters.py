@@ -2815,10 +2815,16 @@ def _find_scene_json(package_dir: Path) -> Path | None:
 
 
 def _index_artifacts(store: PlatformStore, task_id: str, root: Path) -> None:
+    indexable_suffixes = {
+        ".json", ".jsonl", ".html", ".svg", ".png", ".jpg", ".jpeg", ".mp4", ".zip", ".tar", ".gz",
+        ".ply", ".spz", ".splat", ".ksplat", ".sog", ".rad", ".obj", ".glb", ".gltf", ".xml",
+        ".hdf5", ".h5", ".ckpt", ".pkl", ".npy", ".npz", ".csv", ".yaml", ".yml", ".toml", ".py",
+        ".log", ".txt",
+    }
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        if path.suffix.lower() in {".json", ".jsonl", ".html", ".svg", ".png", ".jpg", ".jpeg", ".mp4", ".zip", ".tar", ".gz", ".ply", ".xml", ".log", ".txt"}:
+        if path.suffix.lower() in indexable_suffixes:
             store.add_artifact(task_id=task_id, name=path.name, path=path, kind=path.suffix.lower().lstrip(".") or "file")
 
 

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from real2sim_platform.config import PlatformConfig
+from real2sim_platform.adapters import index_artifacts_for_task
 from real2sim_platform.rm65_controller import collect
 from real2sim_platform.server import create_app
 from real2sim_platform.storage import BosStorage, StorageBoundaryError, normalize_relative_path
@@ -239,6 +240,18 @@ def test_runtime_required_validation_steps_mujoco_and_motrixsim(tmp_path: Path) 
     assert simulators["mujoco"]["runtime"]["status"] == "loaded"
     assert simulators["motrixsim"]["runtime"]["status"] == "loaded_and_stepped"
     assert simulators["motrixsim"]["runtime"]["steps"] == 8
+
+
+def test_production_artifact_index_includes_viewer_dataset_and_model_outputs(tmp_path: Path) -> None:
+    store = PlatformStore(tmp_path / "state.db")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    task = store.create_task(task_type="training", params={}, run_dir=run_dir)
+    for filename in ("scene.glb", "episode_0.hdf5", "policy_best.ckpt", "dataset_stats.pkl"):
+        (run_dir / filename).write_bytes(b"real-production-artifact")
+    index_artifacts_for_task(store, task["id"], run_dir)
+    names = {item["name"] for item in store.list_task_artifacts(task["id"])}
+    assert names == {"scene.glb", "episode_0.hdf5", "policy_best.ckpt", "dataset_stats.pkl"}
 
 
 @pytest.mark.integration
