@@ -48,6 +48,7 @@ class ApiClient:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         self.opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
             urllib.request.HTTPSHandler(context=context),
             urllib.request.HTTPCookieProcessor(self.cookies),
         )
