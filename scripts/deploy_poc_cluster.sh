@@ -70,7 +70,7 @@ spec:
       image: busybox:1.36
       command: [sh, -eu, -c]
       args:
-        - mkdir -p /host-var-lib/real2sim-poc && chown 10001:10001 /host-var-lib/real2sim-poc && chmod 0770 /host-var-lib/real2sim-poc
+        - mkdir -p /host-var-lib/real2sim-poc && chmod 0770 /host-var-lib/real2sim-poc && chown 10001:10001 /host-var-lib/real2sim-poc
       resources:
         requests: {cpu: 20m, memory: 32Mi}
         limits: {cpu: 100m, memory: 64Mi}
