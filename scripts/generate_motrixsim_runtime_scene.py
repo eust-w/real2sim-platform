@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -168,9 +169,11 @@ def validate_mujoco(path: Path, *, steps: int) -> dict[str, Any]:
 
 
 def find_motrixsim_python(explicit: str) -> Path | None:
+    current_python = sys.executable if importlib.util.find_spec("motrixsim") is not None else ""
     candidates = [
         explicit,
         os.environ.get("REAL2SIM_MOTRIXSIM_PYTHON", ""),
+        current_python,
         "/Users/d-robotics/workSpace/motrixsim-docs/.venv/bin/python",
         "/opt/Motphys/motrixsim-docs/.venv/bin/python",
     ]

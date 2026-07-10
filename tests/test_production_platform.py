@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import concurrent.futures
+import importlib.util
+import sys
 from pathlib import Path
 
 import h5py
@@ -10,6 +12,7 @@ from fastapi.testclient import TestClient
 from real2sim_platform.config import PlatformConfig
 from real2sim_platform.adapters import index_artifacts_for_task
 from real2sim_platform.rm65_controller import collect
+from real2sim_platform.runtime_gate import _motrixsim_assets_probe, runtime_key
 from real2sim_platform.server import create_app
 from real2sim_platform.storage import BosStorage, StorageBoundaryError, normalize_relative_path
 from real2sim_platform.store import PlatformStore
@@ -262,7 +265,54 @@ def test_poc_frontend_proxies_authenticated_run_artifacts() -> None:
     assert "proxy_read_timeout 7200s;" in runs_location
     deploy = (ROOT / "scripts/deploy_poc_cluster.sh").read_text(encoding="utf-8")
     assert "--frontend-only" in deploy
+    assert "--worker-only" in deploy
     assert 'set image deployment/real2sim-frontend "frontend=$FRONTEND_IMAGE"' in deploy
+    assert 'set image deployment/real2sim-worker "worker=$WORKER_IMAGE" "runtime-gate=$WORKER_IMAGE"' in deploy
+
+
+def test_worker_image_materializes_motrixsim_lfs_assets() -> None:
+    dockerfile = (ROOT / "docker/worker.Dockerfile").read_text(encoding="utf-8")
+    assert "git-lfs" in dockerfile
+    assert "git -C /opt/motrixsim-docs lfs pull --include='examples/assets/**'" in dockerfile
+    assert "git-lfs.github.com/spec" in dockerfile
+    manifest = (ROOT / "deploy/poc/app-template.yaml").read_text(encoding="utf-8")
+    assert "REAL2SIM_MOTRIXSIM_PYTHON" in manifest
+    assert "GIT_CONFIG_VALUE_3, value: /opt/motrixsim-docs" in manifest
+
+
+def test_runtime_gate_rejects_unresolved_motrixsim_lfs_pointer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "motrixsim-docs"
+    required = [
+        root / "examples/assets/parlour/parlour.xml",
+        root / "examples/assets/rm65_open_cabinet/assets/rm65/meshes/base_link.STL",
+        root / "examples/assets/franka_emika_panda/scene_pick_cube.xml",
+    ]
+    for path in required:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("<mujoco/>\n", encoding="utf-8")
+    required[1].write_text("version https://git-lfs.github.com/spec/v1\noid sha256:deadbeef\nsize 10000\n", encoding="utf-8")
+    monkeypatch.setenv("REAL2SIM_MOTRIXSIM_DOCS_ROOT", str(root))
+    with pytest.raises(RuntimeError, match="Git LFS assets are unresolved"):
+        _motrixsim_assets_probe()
+
+
+def test_runtime_key_changes_with_deployed_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path)
+    monkeypatch.setenv("REAL2SIM_PLATFORM_BUILD_ID", "build-a")
+    first = runtime_key(config)
+    monkeypatch.setenv("REAL2SIM_PLATFORM_BUILD_ID", "build-b")
+    assert runtime_key(config) != first
+
+
+def test_motrixsim_runtime_scene_uses_current_python_when_module_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    script_path = ROOT / "scripts/generate_motrixsim_runtime_scene.py"
+    spec = importlib.util.spec_from_file_location("real2sim_generate_motrixsim_runtime_scene", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.delenv("REAL2SIM_MOTRIXSIM_PYTHON", raising=False)
+    monkeypatch.setattr(module.importlib.util, "find_spec", lambda name: object() if name == "motrixsim" else None)
+    assert module.find_motrixsim_python("") == Path(sys.executable)
 
 
 @pytest.mark.integration

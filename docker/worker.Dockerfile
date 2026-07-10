@@ -20,8 +20,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN sed -i 's|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list && \
     apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-      ca-certificates curl ffmpeg git build-essential cmake ninja-build pkg-config colmap \
+      ca-certificates curl ffmpeg git git-lfs build-essential cmake ninja-build pkg-config colmap \
       libgl1 libglib2.0-0 libgomp1 libx11-6 libxext6 libsm6 && \
+    git lfs install --system && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -55,7 +56,11 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/eust-w/DISCOVE
 
 RUN git clone --filter=blob:none --no-checkout https://github.com/Motphys/motrixsim-docs.git /opt/motrixsim-docs && \
     git -C /opt/motrixsim-docs checkout "${MOTRIXSIM_DOCS_COMMIT}" && \
+    git -C /opt/motrixsim-docs lfs pull --include='examples/assets/**' && \
     test "$(git -C /opt/motrixsim-docs rev-parse HEAD)" = "${MOTRIXSIM_DOCS_COMMIT}" && \
+    test "$(stat -c%s /opt/motrixsim-docs/examples/assets/rm65_open_cabinet/assets/rm65/meshes/base_link.STL)" -gt 10000 && \
+    ! grep -q 'git-lfs.github.com/spec' /opt/motrixsim-docs/examples/assets/rm65_open_cabinet/assets/rm65/meshes/base_link.STL && \
+    git config --system --add safe.directory /opt/motrixsim-docs && \
     mkdir -p /opt/real2sim_paper_runtime/envs/anysplat/bin && \
     ln -s /opt/conda/bin/python /opt/real2sim_paper_runtime/envs/anysplat/bin/python && \
     ln -s /opt/conda/bin/pip /opt/real2sim_paper_runtime/envs/anysplat/bin/pip
@@ -66,7 +71,9 @@ RUN python -c 'import mujoco, motrixsim, torch; from huggingface_hub import snap
     test -f /opt/gs_playground/scripts/real2sim_video_motrix_scene.py
 
 ENV REAL2SIM_PLATFORM_BUILD_ID=${BUILD_ID} \
-    REAL2SIM_SOURCE_COMMIT=${SOURCE_COMMIT}
+    REAL2SIM_SOURCE_COMMIT=${SOURCE_COMMIT} \
+    REAL2SIM_MOTRIXSIM_DOCS_COMMIT=${MOTRIXSIM_DOCS_COMMIT} \
+    REAL2SIM_MOTRIXSIM_PYTHON=/opt/conda/bin/python
 
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin real2sim && \
     chown -R 10001:10001 /app

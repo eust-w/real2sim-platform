@@ -120,6 +120,7 @@ def _assert_source(source: Path) -> None:
     missing.extend(str(source / rel) for rel in DIRECTORIES_TO_COPY.values() if not (source / rel).is_dir())
     if missing:
         raise SystemExit("Missing required MotrixSim assets:\n" + "\n".join(missing))
+    _assert_materialized_lfs_assets((source / rel for rel in DIRECTORIES_TO_COPY.values()), context=str(source))
 
 
 def _copy_package(source: Path, package_dir: Path) -> None:
@@ -145,6 +146,28 @@ def _assert_package(package_dir: Path) -> None:
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise SystemExit("Package is incomplete:\n" + "\n".join(missing))
+    _assert_materialized_lfs_assets((package_dir / "assets" / name for name in DIRECTORIES_TO_COPY), context=str(package_dir))
+
+
+def _assert_materialized_lfs_assets(roots: Any, *, context: str) -> None:
+    pointers: list[str] = []
+    for root in roots:
+        for path in Path(root).rglob("*"):
+            if not path.is_file() or path.stat().st_size > 1024:
+                continue
+            try:
+                header = path.read_bytes()[:160]
+            except OSError:
+                continue
+            if header.startswith(b"version https://git-lfs.github.com/spec/"):
+                pointers.append(str(path))
+    if pointers:
+        preview = "\n".join(pointers[:20])
+        suffix = f"\n... and {len(pointers) - 20} more" if len(pointers) > 20 else ""
+        raise SystemExit(
+            "MotrixSim Git LFS assets are not materialized. Run `git lfs pull` before import. "
+            f"Source: {context}\n{preview}{suffix}"
+        )
 
 
 def _register_file_artifacts(store: PlatformStore, package_dir: Path) -> dict[str, str]:

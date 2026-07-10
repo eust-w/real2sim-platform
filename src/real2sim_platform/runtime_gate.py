@@ -58,6 +58,8 @@ def runtime_key(config: PlatformConfig) -> str:
             config.vggt_model_revision,
             config.discoverse_commit,
             config.act_commit,
+            os.environ.get("REAL2SIM_MOTRIXSIM_DOCS_COMMIT", ""),
+            os.environ.get("REAL2SIM_PLATFORM_BUILD_ID", ""),
         ]
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
@@ -87,6 +89,7 @@ def bootstrap(config: PlatformConfig) -> dict[str, Any]:
     try:
         checks["nvidia"] = _nvidia_probe()
         checks["simulators"] = _simulator_probe()
+        checks["motrixsim_assets"] = _motrixsim_assets_probe()
         checks["act"] = _act_probe(config)
         checks["anysplat"] = _anysplat_probe(config)
     except Exception as exc:
@@ -105,6 +108,7 @@ def bootstrap(config: PlatformConfig) -> dict[str, Any]:
             "vggt_model": config.vggt_model_revision,
             "discoverse": config.discoverse_commit,
             "act": config.act_commit,
+            "motrixsim_docs": os.environ.get("REAL2SIM_MOTRIXSIM_DOCS_COMMIT", ""),
         },
     }
 
@@ -146,6 +150,36 @@ def _simulator_probe() -> dict[str, Any]:
         for _ in range(8):
             step(motrix_model, motrix_data)
     return {"ok": True, "mujoco_time": float(data.time), "motrix_timestep": float(motrix_model.options.timestep)}
+
+
+def _motrixsim_assets_probe() -> dict[str, Any]:
+    root = Path(os.environ.get("REAL2SIM_MOTRIXSIM_DOCS_ROOT", "/opt/motrixsim-docs"))
+    required = {
+        "parlour": root / "examples/assets/parlour/parlour.xml",
+        "rm65_mesh": root / "examples/assets/rm65_open_cabinet/assets/rm65/meshes/base_link.STL",
+        "pick_place_template": root / "examples/assets/franka_emika_panda/scene_pick_cube.xml",
+    }
+    missing = [str(path) for path in required.values() if not path.is_file()]
+    if missing:
+        raise RuntimeError("MotrixSim assets are missing: " + ", ".join(missing))
+    pointers = []
+    for name, path in required.items():
+        if path.stat().st_size <= 1024 and path.read_bytes()[:160].startswith(b"version https://git-lfs.github.com/spec/"):
+            pointers.append(name)
+    if pointers:
+        raise RuntimeError("MotrixSim Git LFS assets are unresolved: " + ", ".join(pointers))
+    completed = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=True,
+    )
+    commit = completed.stdout.strip()
+    expected = os.environ.get("REAL2SIM_MOTRIXSIM_DOCS_COMMIT", "")
+    if expected and commit != expected:
+        raise RuntimeError(f"MotrixSim docs revision mismatch: expected {expected}, got {commit}")
+    return {"ok": True, "commit": commit, "asset_sizes": {name: path.stat().st_size for name, path in required.items()}}
 
 
 def _act_probe(config: PlatformConfig) -> dict[str, Any]:
