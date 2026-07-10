@@ -20,7 +20,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
     PYTHONPATH=/opt/real2sim_paper_runtime/AnySplat:/opt/DISCOVERSE/policies/act:/opt/DISCOVERSE:/opt/gs_playground
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g' /etc/apt/sources.list && \
+    apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       ca-certificates curl ffmpeg git build-essential cmake ninja-build pkg-config colmap \
       libgl1 libglib2.0-0 libgomp1 libx11-6 libxext6 libsm6 && \
     rm -rf /var/lib/apt/lists/*
