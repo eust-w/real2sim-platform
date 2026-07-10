@@ -183,6 +183,16 @@ spec:
             - {name: REAL2SIM_RUNTIME_GATE_DIR, value: /var/lib/real2sim-poc/cache/runtime-gate}
             - {name: HF_HOME, value: /var/lib/real2sim-poc/cache/huggingface}
             - {name: HF_HUB_DISABLE_XET, value: "1"}
+            - {name: HOME, value: /var/lib/real2sim-poc/cache/home}
+            - {name: MPLCONFIGDIR, value: /var/lib/real2sim-poc/cache/matplotlib}
+            - {name: XDG_CACHE_HOME, value: /var/lib/real2sim-poc/cache/xdg}
+            - {name: GIT_CONFIG_COUNT, value: "3"}
+            - {name: GIT_CONFIG_KEY_0, value: safe.directory}
+            - {name: GIT_CONFIG_VALUE_0, value: /opt/real2sim_paper_runtime/AnySplat}
+            - {name: GIT_CONFIG_KEY_1, value: safe.directory}
+            - {name: GIT_CONFIG_VALUE_1, value: /opt/DISCOVERSE}
+            - {name: GIT_CONFIG_KEY_2, value: safe.directory}
+            - {name: GIT_CONFIG_VALUE_2, value: /opt/DISCOVERSE/policies/act}
             - {name: BOS_BUCKET, value: testxyz}
             - {name: BOS_ENDPOINT, value: https://bj.bcebos.com}
             - name: BOS_ACCESS_KEY_ID
