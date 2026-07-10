@@ -49,6 +49,50 @@ printf 'gpu_capacity=%s\ngpu_in_use=%s\nbuild_id=%s\n' "$gpu_capacity" "$gpu_in_
 
 "${K[@]}" apply -f "$ROOT/deploy/poc/bootstrap.yaml"
 
+ensure_host_directory() {
+  local pod="real2sim-hostpath-bootstrap"
+  "${K[@]}" -n "$NAMESPACE" delete pod "$pod" --ignore-not-found --wait=true >/dev/null
+  cat <<YAML | "${K[@]}" apply -f - >/dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod
+  namespace: $NAMESPACE
+  labels:
+    app.kubernetes.io/part-of: real2sim-poc
+    app.kubernetes.io/component: storage-bootstrap
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: "$GPU_NODE"
+  containers:
+    - name: bootstrap
+      image: busybox:1.36
+      command: [sh, -eu, -c]
+      args:
+        - mkdir -p /host-var-lib/real2sim-poc && chown 10001:10001 /host-var-lib/real2sim-poc && chmod 0770 /host-var-lib/real2sim-poc
+      resources:
+        requests: {cpu: 20m, memory: 32Mi}
+        limits: {cpu: 100m, memory: 64Mi}
+      securityContext:
+        runAsUser: 0
+        allowPrivilegeEscalation: false
+        capabilities: {drop: [ALL]}
+      volumeMounts:
+        - {name: host-var-lib, mountPath: /host-var-lib}
+  volumes:
+    - name: host-var-lib
+      hostPath: {path: /var/lib, type: Directory}
+YAML
+  if ! "${K[@]}" -n "$NAMESPACE" wait --for=jsonpath='{.status.phase}'=Succeeded "pod/$pod" --timeout=180s; then
+    "${K[@]}" -n "$NAMESPACE" describe "pod/$pod" >&2 || true
+    exit 1
+  fi
+  "${K[@]}" -n "$NAMESPACE" delete pod "$pod" --wait=true >/dev/null
+}
+
+ensure_host_directory
+
 clone_secret() {
   local source_namespace="$1" source_name="$2" target_name="$3"
   "${K[@]}" -n "$source_namespace" get secret "$source_name" -o json |
