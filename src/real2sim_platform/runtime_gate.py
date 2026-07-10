@@ -5,6 +5,7 @@ import gc
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -133,13 +134,25 @@ def _nvidia_probe() -> dict[str, Any]:
 
 
 def _simulator_probe() -> dict[str, Any]:
-    xml = """<mujoco model="runtime-gate"><option timestep="0.002"/><worldbody><body pos="0 0 0.2"><freejoint/><geom type="sphere" size="0.03" mass="0.1"/></body><geom type="plane" size="1 1 .1"/></worldbody></mujoco>"""
+    xml = """<mujoco model="runtime-gate"><option timestep="0.002"/><worldbody><geom type="plane" size="2 2 .1" rgba=".3 .3 .3 1"/><body pos=".65 0 .2"><freejoint/><geom type="box" size=".1 .1 .1" rgba="1 0 0 1" mass=".1"/></body><camera name="overview" pos="1.7 -1.6 1.25" xyaxes="0.68 0.73 0 -0.37 0.34 0.86"/></worldbody></mujoco>"""
     import mujoco
+    import numpy as np
 
     model = mujoco.MjModel.from_xml_string(xml)
     data = mujoco.MjData(model)
     for _ in range(8):
         mujoco.mj_step(model, data)
+    renderer = mujoco.Renderer(model, height=120, width=160)
+    try:
+        renderer.update_scene(data, camera="overview")
+        image = renderer.render()
+    finally:
+        renderer.close()
+    image_mean = float(image.mean())
+    image_std = float(image.std())
+    nonzero_pixels = int(np.count_nonzero(image))
+    if nonzero_pixels <= 0 or image_std <= 0:
+        raise RuntimeError(f"MuJoCo EGL renderer produced a blank image: mean={image_mean}, std={image_std}")
     with tempfile.TemporaryDirectory(prefix="real2sim-runtime-gate-") as temporary:
         scene_path = Path(temporary) / "scene.xml"
         scene_path.write_text(xml, encoding="utf-8")
@@ -149,7 +162,48 @@ def _simulator_probe() -> dict[str, Any]:
         motrix_data = SceneData(motrix_model)
         for _ in range(8):
             step(motrix_model, motrix_data)
-    return {"ok": True, "mujoco_time": float(data.time), "motrix_timestep": float(motrix_model.options.timestep)}
+        ffmpeg = os.environ.get("REAL2SIM_FFMPEG_BIN", "").strip() or shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg executable is unavailable")
+        video_path = Path(temporary) / "probe.mp4"
+        completed = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-s",
+                "160x120",
+                "-r",
+                "20",
+                "-i",
+                "-",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(video_path),
+            ],
+            input=image.tobytes() * 2,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode != 0 or not video_path.is_file() or video_path.stat().st_size == 0:
+            raise RuntimeError(f"ffmpeg H.264 probe failed with {ffmpeg}: {completed.stderr.decode('utf-8', errors='replace')[-1000:]}")
+        video_size = video_path.stat().st_size
+    return {
+        "ok": True,
+        "mujoco_time": float(data.time),
+        "motrix_timestep": float(motrix_model.options.timestep),
+        "renderer": {"shape": list(image.shape), "mean": image_mean, "std": image_std, "nonzero_pixels": nonzero_pixels},
+        "ffmpeg": {"path": ffmpeg, "video_size": video_size, "codec": "libx264"},
+    }
 
 
 def _motrixsim_assets_probe() -> dict[str, Any]:

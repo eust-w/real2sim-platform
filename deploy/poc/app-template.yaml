@@ -182,6 +182,10 @@ spec:
             - {name: REAL2SIM_BOS_PREFIX, value: real2sim-poc}
             - {name: REAL2SIM_RUNTIME_GATE_DIR, value: /var/lib/real2sim-poc/cache/runtime-gate}
             - {name: REAL2SIM_MOTRIXSIM_PYTHON, value: /opt/conda/bin/python}
+            - {name: REAL2SIM_FFMPEG_BIN, value: /usr/bin/ffmpeg}
+            - {name: MUJOCO_GL, value: egl}
+            - {name: PYOPENGL_PLATFORM, value: egl}
+            - {name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility,graphics"}
             - {name: HF_HOME, value: /var/lib/real2sim-poc/cache/huggingface}
             - {name: HF_HUB_DISABLE_XET, value: "1"}
             - {name: HOME, value: /var/lib/real2sim-poc/cache/home}

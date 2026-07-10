@@ -6,12 +6,13 @@ import sys
 from pathlib import Path
 
 import h5py
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from real2sim_platform.config import PlatformConfig
 from real2sim_platform.adapters import index_artifacts_for_task
-from real2sim_platform.rm65_controller import collect
+from real2sim_platform.rm65_controller import _write_preview_video, collect
 from real2sim_platform.runtime_gate import _motrixsim_assets_probe, runtime_key
 from real2sim_platform.server import create_app
 from real2sim_platform.storage import BosStorage, StorageBoundaryError, normalize_relative_path
@@ -277,7 +278,16 @@ def test_worker_image_materializes_motrixsim_lfs_assets() -> None:
     assert "git-lfs.github.com/spec" in dockerfile
     manifest = (ROOT / "deploy/poc/app-template.yaml").read_text(encoding="utf-8")
     assert "REAL2SIM_MOTRIXSIM_PYTHON" in manifest
+    assert "REAL2SIM_FFMPEG_BIN" in manifest
+    assert "NVIDIA_DRIVER_CAPABILITIES" in manifest
+    assert "compute,utility,graphics" in manifest
     assert "GIT_CONFIG_VALUE_3, value: /opt/motrixsim-docs" in manifest
+
+
+def test_rollout_video_encoder_reports_the_selected_ffmpeg_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REAL2SIM_FFMPEG_BIN", "/usr/bin/false")
+    with pytest.raises(RuntimeError, match="ffmpeg rollout encoding failed with /usr/bin/false"):
+        _write_preview_video(tmp_path / "rollout.mp4", [np.zeros((16, 16, 3), dtype=np.uint8)])
 
 
 def test_runtime_gate_rejects_unresolved_motrixsim_lfs_pointer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

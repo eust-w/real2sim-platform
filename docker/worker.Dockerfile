@@ -73,7 +73,11 @@ RUN python -c 'import mujoco, motrixsim, torch; from huggingface_hub import snap
 ENV REAL2SIM_PLATFORM_BUILD_ID=${BUILD_ID} \
     REAL2SIM_SOURCE_COMMIT=${SOURCE_COMMIT} \
     REAL2SIM_MOTRIXSIM_DOCS_COMMIT=${MOTRIXSIM_DOCS_COMMIT} \
-    REAL2SIM_MOTRIXSIM_PYTHON=/opt/conda/bin/python
+    REAL2SIM_MOTRIXSIM_PYTHON=/opt/conda/bin/python \
+    REAL2SIM_FFMPEG_BIN=/usr/bin/ffmpeg \
+    MUJOCO_GL=egl \
+    PYOPENGL_PLATFORM=egl \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin real2sim && \
     chown -R 10001:10001 /app

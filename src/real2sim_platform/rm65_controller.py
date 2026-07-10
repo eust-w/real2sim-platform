@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -298,8 +300,9 @@ def _write_preview_video(path: Path, images: list[np.ndarray]) -> None:
     if not images:
         raise ValueError("cannot encode an empty rollout")
     height, width = images[0].shape[:2]
+    ffmpeg = os.environ.get("REAL2SIM_FFMPEG_BIN", "").strip() or shutil.which("ffmpeg") or "ffmpeg"
     command = [
-        "ffmpeg",
+        ffmpeg,
         "-y",
         "-loglevel",
         "error",
@@ -320,14 +323,25 @@ def _write_preview_video(path: Path, images: list[np.ndarray]) -> None:
         "yuv420p",
         str(path),
     ]
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise RuntimeError(f"ffmpeg rollout encoder could not start {ffmpeg}: {exc}") from exc
     assert process.stdin is not None
-    for image in images:
-        process.stdin.write(np.ascontiguousarray(image, dtype=np.uint8).tobytes())
-    process.stdin.close()
+    write_error: BrokenPipeError | None = None
+    try:
+        for image in images:
+            process.stdin.write(np.ascontiguousarray(image, dtype=np.uint8).tobytes())
+    except BrokenPipeError as exc:
+        write_error = exc
+    try:
+        process.stdin.close()
+    except BrokenPipeError as exc:
+        write_error = write_error or exc
     stderr = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
-    if process.wait() != 0 or not path.is_file() or path.stat().st_size == 0:
-        raise RuntimeError(f"ffmpeg rollout encoding failed: {stderr[-2000:]}")
+    return_code = process.wait()
+    if write_error or return_code != 0 or not path.is_file() or path.stat().st_size == 0:
+        raise RuntimeError(f"ffmpeg rollout encoding failed with {ffmpeg} (exit {return_code}): {stderr[-2000:]}") from write_error
 
 
 def _damped_least_squares(jacobian: np.ndarray, error: np.ndarray, damping: float) -> np.ndarray:
