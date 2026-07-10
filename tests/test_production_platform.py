@@ -260,6 +260,9 @@ def test_poc_frontend_proxies_authenticated_run_artifacts() -> None:
     assert "proxy_pass http://real2sim_api;" in runs_location
     assert "proxy_buffering off;" in runs_location
     assert "proxy_read_timeout 7200s;" in runs_location
+    deploy = (ROOT / "scripts/deploy_poc_cluster.sh").read_text(encoding="utf-8")
+    assert "--frontend-only" in deploy
+    assert 'set image deployment/real2sim-frontend "frontend=$FRONTEND_IMAGE"' in deploy
 
 
 @pytest.mark.integration

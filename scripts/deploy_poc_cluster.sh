@@ -11,6 +11,7 @@ BUILD_ID="${REAL2SIM_POC_BUILD_ID:-${SOURCE_COMMIT}-$(date -u +%Y%m%d%H%M%S)}"
 OUT="${REAL2SIM_POC_ACCEPTANCE_OUT:-$ROOT/acceptance_runs/poc/$BUILD_ID}"
 BUILD_IMAGES=1
 DEPLOY_APP=1
+FRONTEND_ONLY=0
 tls_dir=""
 context_archive=""
 rendered_manifest=""
@@ -20,8 +21,9 @@ for arg in "$@"; do
   case "$arg" in
     --skip-build) BUILD_IMAGES=0 ;;
     --build-only) DEPLOY_APP=0 ;;
+    --frontend-only) FRONTEND_ONLY=1 ;;
     --help)
-      echo "usage: $0 [--skip-build|--build-only]"
+      echo "usage: $0 [--skip-build] [--build-only] [--frontend-only]"
       exit 0
       ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
@@ -243,22 +245,29 @@ printf '%s\n' "$FRONTEND_IMAGE" "$API_IMAGE" "$WORKER_IMAGE" > "$OUT/images.txt"
 if [[ "$BUILD_IMAGES" == "1" ]]; then
   prepare_context
   build_image frontend docker/frontend.Dockerfile "$FRONTEND_IMAGE"
-  build_image api docker/api.Dockerfile "$API_IMAGE"
-  build_image worker docker/worker.Dockerfile "$WORKER_IMAGE"
+  if [[ "$FRONTEND_ONLY" == "0" ]]; then
+    build_image api docker/api.Dockerfile "$API_IMAGE"
+    build_image worker docker/worker.Dockerfile "$WORKER_IMAGE"
+  fi
 fi
 
 if [[ "$DEPLOY_APP" == "1" ]]; then
-  rendered_manifest="$(mktemp -t real2sim-poc-manifest.XXXXXX.yaml)"
-  sed \
-    -e "s|__BUILD_ID__|$BUILD_ID|g" \
-    -e "s|__FRONTEND_IMAGE__|$FRONTEND_IMAGE|g" \
-    -e "s|__API_IMAGE__|$API_IMAGE|g" \
-    -e "s|__WORKER_IMAGE__|$WORKER_IMAGE|g" \
-    "$ROOT/deploy/poc/app-template.yaml" > "$rendered_manifest"
-  "${K[@]}" apply -f "$rendered_manifest"
-  "${K[@]}" -n "$NAMESPACE" rollout status deployment/real2sim-api --timeout=600s
-  "${K[@]}" -n "$NAMESPACE" rollout status deployment/real2sim-frontend --timeout=600s
-  "${K[@]}" -n "$NAMESPACE" rollout status deployment/real2sim-worker --timeout=3600s
+  if [[ "$FRONTEND_ONLY" == "1" ]]; then
+    "${K[@]}" -n "$NAMESPACE" set image deployment/real2sim-frontend "frontend=$FRONTEND_IMAGE"
+    "${K[@]}" -n "$NAMESPACE" rollout status deployment/real2sim-frontend --timeout=600s
+  else
+    rendered_manifest="$(mktemp -t real2sim-poc-manifest.XXXXXX.yaml)"
+    sed \
+      -e "s|__BUILD_ID__|$BUILD_ID|g" \
+      -e "s|__FRONTEND_IMAGE__|$FRONTEND_IMAGE|g" \
+      -e "s|__API_IMAGE__|$API_IMAGE|g" \
+      -e "s|__WORKER_IMAGE__|$WORKER_IMAGE|g" \
+      "$ROOT/deploy/poc/app-template.yaml" > "$rendered_manifest"
+    "${K[@]}" apply -f "$rendered_manifest"
+    "${K[@]}" -n "$NAMESPACE" rollout status deployment/real2sim-api --timeout=600s
+    "${K[@]}" -n "$NAMESPACE" rollout status deployment/real2sim-frontend --timeout=600s
+    "${K[@]}" -n "$NAMESPACE" rollout status deployment/real2sim-worker --timeout=3600s
+  fi
   "${K[@]}" -n "$NAMESPACE" get pods,svc,pvc -l app.kubernetes.io/part-of=real2sim-poc -o wide > "$OUT/resources.txt"
   "${K[@]}" -n "$NAMESPACE" get svc real2sim-frontend -o json > "$OUT/frontend-service.json"
 fi
