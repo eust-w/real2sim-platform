@@ -241,7 +241,12 @@ def _act_probe(config: PlatformConfig) -> dict[str, Any]:
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join([str(act_root), str(config.discoverse_root), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     completed = subprocess.run(
-        [sys.executable, "-c", "import torch; from policies.act.act import ACTPolicy; print(torch.__version__); assert ACTPolicy is not None and torch.cuda.is_available()"],
+        [
+            sys.executable,
+            "-c",
+            "import torch; import policy_train; import utils.utils; from policies.act.act import ACTPolicy; "
+            "print(torch.__version__); assert ACTPolicy is not None and torch.cuda.is_available()",
+        ],
         cwd=act_root,
         env=env,
         text=True,
@@ -249,7 +254,7 @@ def _act_probe(config: PlatformConfig) -> dict[str, Any]:
         timeout=60,
         check=True,
     )
-    return {"ok": True, "torch": completed.stdout.strip().splitlines()[-1]}
+    return {"ok": True, "torch": completed.stdout.strip().splitlines()[-1], "training_stack_imported": True}
 
 
 def _anysplat_probe(config: PlatformConfig) -> dict[str, Any]:

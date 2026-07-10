@@ -276,6 +276,8 @@ def test_worker_image_materializes_motrixsim_lfs_assets() -> None:
     assert "git-lfs" in dockerfile
     assert "git -C /opt/motrixsim-docs lfs pull --include='examples/assets/**'" in dockerfile
     assert "git-lfs.github.com/spec" in dockerfile
+    assert "requirements/train_eval.txt" in dockerfile
+    assert "prepare_discoverse_act_runtime.py" in dockerfile
     manifest = (ROOT / "deploy/poc/app-template.yaml").read_text(encoding="utf-8")
     assert "REAL2SIM_MOTRIXSIM_PYTHON" in manifest
     assert "REAL2SIM_FFMPEG_BIN" in manifest
@@ -288,6 +290,21 @@ def test_rollout_video_encoder_reports_the_selected_ffmpeg_failure(tmp_path: Pat
     monkeypatch.setenv("REAL2SIM_FFMPEG_BIN", "/usr/bin/false")
     with pytest.raises(RuntimeError, match="ffmpeg rollout encoding failed with /usr/bin/false"):
         _write_preview_video(tmp_path / "rollout.mp4", [np.zeros((16, 16, 3), dtype=np.uint8)])
+
+
+def test_discoverse_act_runtime_patch_keeps_airbot_dependency_explicit(tmp_path: Path) -> None:
+    script_path = ROOT / "scripts/prepare_discoverse_act_runtime.py"
+    spec = importlib.util.spec_from_file_location("real2sim_prepare_discoverse_act_runtime", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    target = tmp_path / "utils.py"
+    target.write_text("import torch\nfrom airbot_data_collection.tools.av_coder import AvCoder\n", encoding="utf-8")
+    assert module.patch_optional_airbot_dependency(target) is True
+    patched = target.read_text(encoding="utf-8")
+    assert "MCAP decoding or AIRBOT hardware evaluation" in patched
+    assert "except ModuleNotFoundError" in patched
+    assert module.patch_optional_airbot_dependency(target) is False
 
 
 def test_runtime_gate_rejects_unresolved_motrixsim_lfs_pointer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

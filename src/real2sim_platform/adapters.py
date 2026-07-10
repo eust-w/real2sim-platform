@@ -1068,6 +1068,7 @@ def _run_discoverse_act_training(config: PlatformConfig, store: PlatformStore, t
             "state_dim": dataset_info["state_dim"],
             "action_dim": dataset_info["action_dim"],
             "config_path": str(config_path),
+            "runtime_compatibility": "HDF5 ACT training; AIRBOT MCAP/hardware codecs remain optional and fail explicitly when requested",
         },
         "metrics": {"best_validation_loss": best_loss},
         "artifacts": {"checkpoint": str(checkpoint), "dataset_stats": str(stats_path)},

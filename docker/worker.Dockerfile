@@ -52,6 +52,9 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/eust-w/DISCOVE
     git -C /opt/DISCOVERSE submodule update --init policies/act && \
     test "$(git -C /opt/DISCOVERSE rev-parse HEAD)" = "${DISCOVERSE_COMMIT}" && \
     test "$(git -C /opt/DISCOVERSE/policies/act rev-parse HEAD)" = "${ACT_COMMIT}" && \
+    grep -Ev '^[[:space:]]*(torchvision|torch|opencv-python)([[:space:]]|$)' /opt/DISCOVERSE/policies/act/requirements/train_eval.txt > /tmp/discoverse-act-train-requirements.txt && \
+    python -m pip install --no-cache-dir -c /tmp/worker-constraints.txt -r /tmp/discoverse-act-train-requirements.txt && \
+    python /app/scripts/prepare_discoverse_act_runtime.py --act-root /opt/DISCOVERSE/policies/act --expected-commit "${ACT_COMMIT}" && \
     python -m pip install --no-cache-dir --no-deps -e /opt/DISCOVERSE
 
 RUN git clone --filter=blob:none --no-checkout https://github.com/Motphys/motrixsim-docs.git /opt/motrixsim-docs && \
