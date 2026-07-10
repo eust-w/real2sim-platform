@@ -524,8 +524,9 @@ def resume_reconstruction_evidence(run: AcceptanceRun, report_path: Path) -> tup
     previous = json.loads(report_path.read_text(encoding="utf-8"))
     if previous.get("schema") != "real2sim.poc_acceptance_report.v1":
         raise AcceptanceError(f"unsupported resume report schema: {previous.get('schema')}")
-    if previous.get("build_id") != run.build_id:
-        raise AcceptanceError(f"resume report build_id {previous.get('build_id')} does not match {run.build_id}")
+    source_build_id = str(previous.get("build_id") or "")
+    if not source_build_id:
+        raise AcceptanceError("resume report does not identify its source build")
 
     prepared = next((item for item in previous.get("datasets", []) if item.get("role") == "playroom_prepared"), None)
     scenes = [item for item in previous.get("scenes", []) if str(item.get("role") or "").startswith("playroom_reconstruction_")]
@@ -568,7 +569,19 @@ def resume_reconstruction_evidence(run: AcceptanceRun, report_path: Path) -> tup
     run.report["datasets"] = [item for item in previous.get("datasets", []) if item.get("role") in {"playroom_upload", "playroom_prepared"}]
     run.report["scenes"] = scenes
     run.report["storage"] = dict(previous.get("storage") or {})
-    run.report["resumed_from"] = str(report_path.resolve())
+    run.report["resumed_evidence"] = {
+        "report": str(report_path.resolve()),
+        "source_build_id": source_build_id,
+        "target_build_id": run.build_id,
+        "cross_build": source_build_id != run.build_id,
+        "reaudited_task_ids": [
+            str(task["id"])
+            for task_type, count in required_counts.items()
+            for task in by_type[task_type][:count]
+        ],
+        "prepared_dataset_id": prepared_id,
+        "scene_ids": scene_ids,
+    }
     run.save()
     return prepared_id, scene_ids
 

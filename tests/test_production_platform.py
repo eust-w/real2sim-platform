@@ -387,6 +387,73 @@ def test_source_revision_rejects_unverified_archive_marker(tmp_path: Path) -> No
     assert read_source_revision(root) == ""
 
 
+def test_acceptance_reaudits_reconstruction_evidence_across_builds(tmp_path: Path) -> None:
+    script_path = ROOT / "scripts/acceptance_poc_cluster.py"
+    spec = importlib.util.spec_from_file_location("real2sim_acceptance_poc_cluster", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    tasks = [
+        {"id": "media", "type": "media_prepare"},
+        {"id": "preflight", "type": "reconstruction_preflight"},
+        {"id": "recon-a", "type": "scene_reconstruction"},
+        {"id": "recon-b", "type": "scene_reconstruction"},
+        {"id": "sim-a", "type": "simulator_validation"},
+        {"id": "sim-b", "type": "simulator_validation"},
+    ]
+    report_path = tmp_path / "prior-report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema": "real2sim.poc_acceptance_report.v1",
+                "build_id": "prior-build",
+                "tasks": tasks,
+                "datasets": [{"id": "prepared", "role": "playroom_prepared"}],
+                "scenes": [
+                    {"id": "scene-a", "role": "playroom_reconstruction_1"},
+                    {"id": "scene-b", "role": "playroom_reconstruction_2"},
+                ],
+                "storage": {"source_image_count": 225},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def get(self, path: str) -> dict:
+            if path == "/api/datasets/prepared/manifest":
+                return {"frame_count": 225}
+            return {"assets": [{"name": "scene.ply"}, {"name": "scene.xml"}]}
+
+    class FakeRun:
+        build_id = "current-build"
+        client = FakeClient()
+
+        def __init__(self) -> None:
+            self.report = {"datasets": [], "scenes": [], "storage": {}, "checks": []}
+            self.audited: list[str] = []
+
+        def wait_task(self, task_id: str, required_artifacts: tuple[str, ...]) -> dict:
+            assert required_artifacts
+            self.audited.append(task_id)
+            return {"id": task_id, "status": "succeeded"}
+
+        def check(self, name: str, ok: bool, detail=None) -> None:
+            assert ok, (name, detail)
+            self.report["checks"].append({"name": name, "ok": ok})
+
+        def save(self) -> None:
+            return None
+
+    run = FakeRun()
+    prepared_id, scene_ids = module.resume_reconstruction_evidence(run, report_path)
+    assert prepared_id == "prepared"
+    assert scene_ids == ["scene-a", "scene-b"]
+    assert run.audited == ["media", "preflight", "recon-a", "recon-b", "sim-a", "sim-b"]
+    assert run.report["resumed_evidence"]["cross_build"] is True
+    assert run.report["resumed_evidence"]["source_build_id"] == "prior-build"
+
+
 def test_motrixsim_runtime_scene_uses_current_python_when_module_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     script_path = ROOT / "scripts/generate_motrixsim_runtime_scene.py"
     spec = importlib.util.spec_from_file_location("real2sim_generate_motrixsim_runtime_scene", script_path)
