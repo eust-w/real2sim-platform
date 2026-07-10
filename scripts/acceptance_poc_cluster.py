@@ -518,6 +518,61 @@ def wait_until_status(client: ApiClient, task_id: str, status: str, timeout_seco
     raise AcceptanceError(f"task {task_id} did not reach {status} within {timeout_seconds}s")
 
 
+def resume_reconstruction_evidence(run: AcceptanceRun, report_path: Path) -> tuple[str, list[str]]:
+    if not report_path.is_file():
+        raise AcceptanceError(f"resume report not found: {report_path}")
+    previous = json.loads(report_path.read_text(encoding="utf-8"))
+    if previous.get("schema") != "real2sim.poc_acceptance_report.v1":
+        raise AcceptanceError(f"unsupported resume report schema: {previous.get('schema')}")
+    if previous.get("build_id") != run.build_id:
+        raise AcceptanceError(f"resume report build_id {previous.get('build_id')} does not match {run.build_id}")
+
+    prepared = next((item for item in previous.get("datasets", []) if item.get("role") == "playroom_prepared"), None)
+    scenes = [item for item in previous.get("scenes", []) if str(item.get("role") or "").startswith("playroom_reconstruction_")]
+    tasks = list(previous.get("tasks", []))
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for task in tasks:
+        by_type.setdefault(str(task.get("type") or ""), []).append(task)
+    if not prepared or len(scenes) != 2:
+        raise AcceptanceError("resume report does not contain one prepared Playroom dataset and two reconstruction scenes")
+    required_counts = {"media_prepare": 1, "reconstruction_preflight": 1, "scene_reconstruction": 2, "simulator_validation": 2}
+    for task_type, count in required_counts.items():
+        if len(by_type.get(task_type, [])) < count:
+            raise AcceptanceError(f"resume report has only {len(by_type.get(task_type, []))} {task_type} task(s); expected {count}")
+
+    artifact_requirements = {
+        "media_prepare": ("prepared_manifest.json",),
+        "reconstruction_preflight": ("capture_preflight_report.json",),
+        "scene_reconstruction": (
+            "environment.json",
+            "reconstruction_command.json",
+            "capture_preflight_report.json",
+            "reconstruction_report.json",
+            "scene_manifest.json",
+        ),
+        "simulator_validation": ("validation_report.json",),
+    }
+    for task_type, count in required_counts.items():
+        for task in by_type[task_type][:count]:
+            run.wait_task(str(task["id"]), required_artifacts=artifact_requirements[task_type])
+
+    prepared_id = str(prepared["id"])
+    prepared_manifest = run.client.get(f"/api/datasets/{prepared_id}/manifest")
+    run.check("恢复数据集仍有至少 80 帧", int(prepared_manifest.get("frame_count") or 0) >= 80, prepared_manifest.get("frame_count"))
+    scene_ids = [str(item["id"]) for item in scenes]
+    for scene_id in scene_ids:
+        manifest = run.client.get(f"/api/scenes/{scene_id}/manifest")
+        names = {str(asset.get("name") or "") for asset in manifest.get("assets", []) if isinstance(asset, dict)}
+        run.check(f"恢复场景 {scene_id[:8]} 仍有 3D 与仿真资产", bool({"scene.ply", "pose_init_trained_scene.ply"} & names) and "scene.xml" in names, sorted(names)[:20])
+    run.check("恢复的两次重建场景相互独立", len(set(scene_ids)) == 2, scene_ids)
+    run.report["datasets"] = [item for item in previous.get("datasets", []) if item.get("role") in {"playroom_upload", "playroom_prepared"}]
+    run.report["scenes"] = scenes
+    run.report["storage"] = dict(previous.get("storage") or {})
+    run.report["resumed_from"] = str(report_path.resolve())
+    run.save()
+    return prepared_id, scene_ids
+
+
 def run_acceptance(args: argparse.Namespace) -> int:
     build_id = args.build_id or kubectl(
         args.kubeconfig,
@@ -548,88 +603,93 @@ def run_acceptance(args: argparse.Namespace) -> int:
         run.stage("运行时、存储与版本预检", lambda: validate_infrastructure(run))
         run.stage("用户 CRUD 与角色隔离", lambda: verify_rbac(run))
 
-        uploaded_dataset: dict[str, Any] | None = None
-        prepared_dataset_id: str | None = None
-        playroom = run.stage("打包真实 Playroom 225 帧", lambda: build_playroom_archive(args.playroom, build_id))
-        if playroom:
-            archive, image_count, checksum = playroom
-            run.report["storage"]["source_image_count"] = image_count
-            uploaded_dataset = run.stage("BOS 分片上传与断点续传", lambda: upload_with_resume(run, archive, checksum))
-        if uploaded_dataset:
-            prepared = run.stage(
-                "媒体准备 225 帧",
-                lambda: run.create_task(
-                    "media_prepare",
-                    {
-                        "dataset_id": uploaded_dataset["id"],
-                        "camera_label": "playroom.rgb",
-                        "target_frame_count": 225,
-                        "min_total_frames": 80,
-                        "max_frames_per_video": 225,
-                        "max_videos": 1,
-                        "sample_fps": 2,
-                        "output_name": f"playroom-prepared-{build_id}",
-                    },
-                    required_artifacts=("prepared_manifest.json",),
-                ),
-            )
-            if prepared:
-                prepared_dataset_id = str(prepared["result"]["dataset_id"])
-                run.report["datasets"].append({"id": prepared_dataset_id, "role": "playroom_prepared", "frame_count": prepared["result"].get("frame_count")})
-                run.stage(
-                    "Playroom 重建质量预检",
-                    lambda: run.create_task(
-                        "reconstruction_preflight",
-                        {"dataset_id": prepared_dataset_id, "min_frames": 80, "target_frame_count": 225, "allow_low_quality": False, "quality_preset": "capture-high"},
-                        required_artifacts=("capture_preflight_report.json",),
-                    ),
-                )
-
         reconstruction_scenes: list[str] = []
-        if prepared_dataset_id:
-            for index in range(1, 3):
-                reconstructed = run.stage(
-                    f"Playroom AnySplat 真实重建 #{index}",
-                    lambda index=index: run.create_task(
-                        "scene_reconstruction",
+        prepared_dataset_id: str | None = None
+        if args.resume_report:
+            resumed = run.stage("恢复并复核已通过的 Playroom 重建证据", lambda: resume_reconstruction_evidence(run, args.resume_report))
+            if resumed:
+                prepared_dataset_id, reconstruction_scenes = resumed
+        else:
+            uploaded_dataset: dict[str, Any] | None = None
+            playroom = run.stage("打包真实 Playroom 225 帧", lambda: build_playroom_archive(args.playroom, build_id))
+            if playroom:
+                archive, image_count, checksum = playroom
+                run.report["storage"]["source_image_count"] = image_count
+                uploaded_dataset = run.stage("BOS 分片上传与断点续传", lambda: upload_with_resume(run, archive, checksum))
+            if uploaded_dataset:
+                prepared = run.stage(
+                    "媒体准备 225 帧",
+                    lambda: run.create_task(
+                        "media_prepare",
                         {
-                            "dataset_id": prepared_dataset_id,
-                            "scene_name": f"Playroom A800 Reconstruction {index}",
-                            "renderer": "spark",
-                            "simulators": ["mujoco", "motrixsim"],
-                            "dry_run": False,
-                            "preflight_required": True,
-                            "min_frames": 80,
-                            "allow_low_quality": False,
-                            "quality_preset": "capture-high",
-                            "pose_init_train": True,
-                            "sfm_matcher": "exhaustive",
-                            "sfm_guided_matching": True,
-                            "sfm_frames": "selected",
-                            "anysplat_keyframe_strategy": "sfm-registered",
-                            "auto_cover": True,
+                            "dataset_id": uploaded_dataset["id"],
+                            "camera_label": "playroom.rgb",
+                            "target_frame_count": 225,
+                            "min_total_frames": 80,
+                            "max_frames_per_video": 225,
+                            "max_videos": 1,
+                            "sample_fps": 2,
+                            "output_name": f"playroom-prepared-{build_id}",
                         },
-                        required_artifacts=(
-                            "environment.json",
-                            "reconstruction_command.json",
-                            "capture_preflight_report.json",
-                            "reconstruction_report.json",
-                            "scene_manifest.json",
-                        ),
+                        required_artifacts=("prepared_manifest.json",),
                     ),
                 )
-                if reconstructed:
-                    scene_id = str(reconstructed["result"]["scene_id"])
-                    reconstruction_scenes.append(scene_id)
-                    run.report["scenes"].append({"id": scene_id, "role": f"playroom_reconstruction_{index}"})
+                if prepared:
+                    prepared_dataset_id = str(prepared["result"]["dataset_id"])
+                    run.report["datasets"].append({"id": prepared_dataset_id, "role": "playroom_prepared", "frame_count": prepared["result"].get("frame_count")})
                     run.stage(
-                        f"Playroom 重建仿真双运行时校验 #{index}",
-                        lambda scene_id=scene_id: run.create_task(
-                            "simulator_validation",
-                            {"scene_id": scene_id, "simulators": ["mujoco", "motrixsim"], "level": "runtime_required"},
-                            required_artifacts=("validation_report.json",),
+                        "Playroom 重建质量预检",
+                        lambda: run.create_task(
+                            "reconstruction_preflight",
+                            {"dataset_id": prepared_dataset_id, "min_frames": 80, "target_frame_count": 225, "allow_low_quality": False, "quality_preset": "capture-high"},
+                            required_artifacts=("capture_preflight_report.json",),
                         ),
                     )
+
+            if prepared_dataset_id:
+                for index in range(1, 3):
+                    reconstructed = run.stage(
+                        f"Playroom AnySplat 真实重建 #{index}",
+                        lambda index=index: run.create_task(
+                            "scene_reconstruction",
+                            {
+                                "dataset_id": prepared_dataset_id,
+                                "scene_name": f"Playroom A800 Reconstruction {index}",
+                                "renderer": "spark",
+                                "simulators": ["mujoco", "motrixsim"],
+                                "dry_run": False,
+                                "preflight_required": True,
+                                "min_frames": 80,
+                                "allow_low_quality": False,
+                                "quality_preset": "capture-high",
+                                "pose_init_train": True,
+                                "sfm_matcher": "exhaustive",
+                                "sfm_guided_matching": True,
+                                "sfm_frames": "selected",
+                                "anysplat_keyframe_strategy": "sfm-registered",
+                                "auto_cover": True,
+                            },
+                            required_artifacts=(
+                                "environment.json",
+                                "reconstruction_command.json",
+                                "capture_preflight_report.json",
+                                "reconstruction_report.json",
+                                "scene_manifest.json",
+                            ),
+                        ),
+                    )
+                    if reconstructed:
+                        scene_id = str(reconstructed["result"]["scene_id"])
+                        reconstruction_scenes.append(scene_id)
+                        run.report["scenes"].append({"id": scene_id, "role": f"playroom_reconstruction_{index}"})
+                        run.stage(
+                            f"Playroom 重建仿真双运行时校验 #{index}",
+                            lambda scene_id=scene_id: run.create_task(
+                                "simulator_validation",
+                                {"scene_id": scene_id, "simulators": ["mujoco", "motrixsim"], "level": "runtime_required"},
+                                required_artifacts=("validation_report.json",),
+                            ),
+                        )
         if len(reconstruction_scenes) == 2:
             run.stage(
                 "两次重建产生独立场景包",
@@ -752,6 +812,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--playroom", type=Path, default=Path(os.environ.get("REAL2SIM_POC_PLAYROOM", DEFAULT_PLAYROOM)))
     parser.add_argument("--build-id", default=os.environ.get("REAL2SIM_POC_BUILD_ID", ""))
     parser.add_argument("--out", type=Path, default=Path(os.environ["REAL2SIM_POC_ACCEPTANCE_OUT"]) if os.environ.get("REAL2SIM_POC_ACCEPTANCE_OUT") else None)
+    parser.add_argument("--resume-report", type=Path, default=Path(os.environ["REAL2SIM_POC_RESUME_REPORT"]) if os.environ.get("REAL2SIM_POC_RESUME_REPORT") else None)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--timeout-seconds", type=int, default=int(os.environ.get("REAL2SIM_POC_ACCEPTANCE_TIMEOUT_SECONDS", "28800")))
     parser.add_argument("--act-epochs", type=int, default=int(os.environ.get("REAL2SIM_POC_ACT_EPOCHS", "100")))
