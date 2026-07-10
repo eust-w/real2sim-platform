@@ -209,9 +209,26 @@ spec:
             items:
               - {key: .dockerconfigjson, path: config.json}
 YAML
-  if ! "${K[@]}" -n "$NAMESPACE" wait --for=condition=complete "job/$job" --timeout=7200s; then
+  local deadline=$((SECONDS + 7200))
+  local build_state="running"
+  while (( SECONDS < deadline )); do
+    local succeeded failed
+    succeeded="$("${K[@]}" -n "$NAMESPACE" get "job/$job" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+    failed="$("${K[@]}" -n "$NAMESPACE" get "job/$job" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+    if [[ "$succeeded" == "1" ]]; then
+      build_state="succeeded"
+      break
+    fi
+    if [[ -n "$failed" && "$failed" != "0" ]]; then
+      build_state="failed"
+      break
+    fi
+    sleep 5
+  done
+  if [[ "$build_state" != "succeeded" ]]; then
     "${K[@]}" -n "$NAMESPACE" logs "job/$job" --all-containers=true > "$OUT/build-${component}.log" 2>&1 || true
     "${K[@]}" -n "$NAMESPACE" describe "job/$job" > "$OUT/build-${component}-describe.txt" 2>&1 || true
+    echo "image build $component ended as $build_state; see $OUT/build-${component}.log" >&2
     return 1
   fi
   "${K[@]}" -n "$NAMESPACE" logs "job/$job" --all-containers=true > "$OUT/build-${component}.log"
