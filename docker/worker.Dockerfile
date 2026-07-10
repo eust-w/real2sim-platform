@@ -29,6 +29,9 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY docker/anysplat-runtime-requirements.txt /tmp/anysplat-runtime-requirements.txt
 COPY docker/worker-constraints.txt /tmp/worker-constraints.txt
+COPY scripts/prepare_discoverse_act_runtime.py /tmp/prepare_discoverse_act_runtime.py
+COPY src/real2sim_platform/__init__.py /tmp/real2sim_platform/__init__.py
+COPY src/real2sim_platform/source_revision.py /tmp/real2sim_platform/source_revision.py
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     python -m pip install --no-cache-dir tomli==2.2.1 && \
@@ -40,11 +43,6 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     python -m pip install --no-cache-dir torch-scatter==2.1.2 -f https://data.pyg.org/whl/torch-2.2.0+cu121.html && \
     python -m pip install --no-cache-dir 'https://github.com/nerfstudio-project/gsplat/releases/download/v1.4.0/gsplat-1.4.0%2Bpt22cu121-cp310-cp310-linux_x86_64.whl' && \
     python -m pip install --no-cache-dir -c /tmp/worker-constraints.txt motrixsim-core==0.8.0
-
-COPY src ./src
-COPY scripts ./scripts
-COPY vendor/gs_playground /opt/gs_playground
-RUN python -m pip install --no-cache-dir --no-deps .
 
 RUN git clone --filter=blob:none --no-checkout https://github.com/InternRobotics/AnySplat.git /opt/real2sim_paper_runtime/AnySplat && \
     git -C /opt/real2sim_paper_runtime/AnySplat checkout "${ANYSPLAT_COMMIT}" && \
@@ -68,7 +66,7 @@ RUN mkdir -p /opt/DISCOVERSE /opt/DISCOVERSE/policies/act && \
     rm -f /tmp/discoverse.tar.gz /tmp/act.tar.gz && \
     grep -Ev '^[[:space:]]*(torchvision|torch|opencv-python)([[:space:]]|$)' /opt/DISCOVERSE/policies/act/requirements/train_eval.txt > /tmp/discoverse-act-train-requirements.txt && \
     python -m pip install --no-cache-dir -c /tmp/worker-constraints.txt -r /tmp/discoverse-act-train-requirements.txt && \
-    python /app/scripts/prepare_discoverse_act_runtime.py --act-root /opt/DISCOVERSE/policies/act --expected-commit "${ACT_COMMIT}" && \
+    PYTHONPATH=/tmp python /tmp/prepare_discoverse_act_runtime.py --act-root /opt/DISCOVERSE/policies/act --expected-commit "${ACT_COMMIT}" && \
     python -m pip install --no-cache-dir --no-deps -e /opt/DISCOVERSE
 
 RUN git clone --filter=blob:none --no-checkout https://github.com/Motphys/motrixsim-docs.git /opt/motrixsim-docs && \
@@ -81,6 +79,11 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/Motphys/motrix
     mkdir -p /opt/real2sim_paper_runtime/envs/anysplat/bin && \
     ln -s /opt/conda/bin/python /opt/real2sim_paper_runtime/envs/anysplat/bin/python && \
     ln -s /opt/conda/bin/pip /opt/real2sim_paper_runtime/envs/anysplat/bin/pip
+
+COPY src ./src
+COPY scripts ./scripts
+COPY vendor/gs_playground /opt/gs_playground
+RUN python -m pip install --no-cache-dir --no-deps .
 
 RUN python -c 'import mujoco, motrixsim, torch; from huggingface_hub import snapshot_download; assert torch.__version__.startswith("2.2")' && \
     PYTHONPATH=/opt/DISCOVERSE/policies/act:/opt/DISCOVERSE python -c 'from policies.act.act import ACTPolicy; assert ACTPolicy is not None' && \
