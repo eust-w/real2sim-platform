@@ -210,8 +210,16 @@
       });
       status.textContent = rendererStatusText(manifest, assets.length);
       hint.textContent = viewerHint(assets, renderable);
-      const preferred = renderable.find((item) => item.autoload !== false) || null;
-      if (preferred) await loadAsset(preferred);
+      const recommended = renderable[0] || null;
+      const previewImage = renderable.find(isScenePreviewImage) || null;
+      const preferred = recommended?.autoload !== false
+        ? recommended
+        : previewImage || renderable.find((item) => item.autoload !== false) || null;
+      if (preferred) {
+        // Large 3DGS assets remain an explicit user action. Their real cover is
+        // a safer first frame than an automatically generated diagnostic mesh.
+        await loadAsset(preferred, { manual: preferred === previewImage });
+      }
       else if (renderable[0]) addPlaceholder(`可渲染大文件未自动加载：${renderable[0].name || "asset"} · ${renderable[0].size_label || "unknown size"} · 点击按钮手动加载`);
       else addPlaceholder("当前清单没有可直接渲染的 PLY/SPZ/SPLAT/GLB/OBJ 资产");
       if (probeFull) {
@@ -364,8 +372,18 @@
       const sizeBytes = Number(asset?.size_bytes || 0);
       if (name.endsWith("_threejs_rgb.ply")) return false;
       if (name.includes("colmap_sparse") || name.includes("sparse_points")) return false;
-      if (name === "pose_init_trained_scene.ply") return false;
+      if (name === "pose_init_trained_scene.ply") return true;
       return name === "scene.ply" && (path.includes("/3dgs/") || sizeBytes > 50 * 1024 * 1024);
+    }
+
+    function isScenePreviewImage(asset) {
+      const name = String(asset?.name || asset?.path || "").toLowerCase();
+      return name === "scene_cover.png"
+        || name.endsWith("/scene_cover.png")
+        || name === "source_gs_preview.png"
+        || name.endsWith("/source_gs_preview.png")
+        || name === "pointcloud_projection_preview.png"
+        || name.endsWith("/pointcloud_projection_preview.png");
     }
 
     async function loadSparkOrFallback(asset, suffix) {
