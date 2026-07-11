@@ -1,3 +1,5 @@
+FROM node:20.19.2-bookworm-slim@sha256:7cd3fbc830c75c92256fe1122002add9a1c025831af8770cd0bf8e45688ef661 AS node-runtime
+
 FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
 
 ARG ANYSPLAT_COMMIT=5f5e208a7dd57d52e43ea0d553a95eab526e8775
@@ -86,12 +88,16 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/Motphys/motrix
     ln -s /opt/conda/bin/python /opt/real2sim_paper_runtime/envs/anysplat/bin/python && \
     ln -s /opt/conda/bin/pip /opt/real2sim_paper_runtime/envs/anysplat/bin/pip
 
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+RUN test "$(node --version)" = "v20.19.2"
+
 COPY src ./src
 COPY scripts ./scripts
 COPY vendor/gs_playground /opt/gs_playground
 RUN python -m pip install --no-cache-dir --no-deps .
 
 RUN python -c 'import mujoco, motrixsim, torch; from huggingface_hub import snapshot_download; assert torch.__version__.startswith("2.2")' && \
+    test "$(node --version)" = "v20.19.2" && \
     PYTHONPATH=/opt/DISCOVERSE/policies/act:/opt/DISCOVERSE python -c 'from policies.act.act import ACTPolicy; assert ACTPolicy is not None' && \
     PYTHONPATH=/opt/real2sim_paper_runtime/AnySplat python -c 'from src.model.model.anysplat import AnySplat; assert AnySplat is not None' && \
     test -f /opt/gs_playground/scripts/real2sim_video_motrix_scene.py

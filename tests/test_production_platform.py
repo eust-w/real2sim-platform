@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from real2sim_platform.config import PlatformConfig
 from real2sim_platform.adapters import _act_task_config_source, _inspect_act_dataset, index_artifacts_for_task
 from real2sim_platform.rm65_controller import ACTION_ALIGNMENT, CONTROL_HOLD_STEPS, _write_preview_video, collect
-from real2sim_platform.runtime_gate import _motrixsim_assets_probe, runtime_key
+from real2sim_platform.runtime_gate import _motrixsim_assets_probe, _spz_exporter_probe, runtime_key
 from real2sim_platform.server import create_app
 from real2sim_platform.source_revision import read_source_revision
 from real2sim_platform.storage import BosStorage, StorageBoundaryError, normalize_relative_path
@@ -22,6 +22,15 @@ from real2sim_platform.store import PlatformStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_ascii_3dgs_spz_exporter_uses_real_spark_writer(tmp_path: Path) -> None:
+    config = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace")
+    probe = _spz_exporter_probe(config)
+    assert probe["ok"] is True, probe
+    assert probe["input_format"] == "ascii"
+    assert probe["splats"] == 2
+    assert probe["output_size_bytes"] > 0
 
 
 def test_auth_first_login_rbac_and_user_crud(tmp_path: Path) -> None:

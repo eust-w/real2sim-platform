@@ -91,6 +91,7 @@ def bootstrap(config: PlatformConfig) -> dict[str, Any]:
         checks["nvidia"] = _nvidia_probe()
         checks["simulators"] = _simulator_probe()
         checks["motrixsim_assets"] = _motrixsim_assets_probe()
+        checks["spz_exporter"] = _spz_exporter_probe(config)
         checks["act"] = _act_probe(config)
         checks["anysplat"] = _anysplat_probe(config)
     except Exception as exc:
@@ -112,6 +113,62 @@ def bootstrap(config: PlatformConfig) -> dict[str, Any]:
             "motrixsim_docs": os.environ.get("REAL2SIM_MOTRIXSIM_DOCS_COMMIT", ""),
         },
     }
+
+
+def _spz_exporter_probe(config: PlatformConfig) -> dict[str, Any]:
+    node = shutil.which("node")
+    script = config.app_root / "scripts" / "convert_3dgs_ply_to_spz.mjs"
+    vendor = config.app_root / "src" / "real2sim_platform" / "static" / "vendor"
+    if not node or not script.is_file() or not (vendor / "spark.module.min.js").is_file():
+        return {"ok": False, "node": node or "", "script": str(script), "vendor": str(vendor)}
+    with tempfile.TemporaryDirectory(prefix="real2sim-spz-probe-") as temporary:
+        root = Path(temporary)
+        source = root / "probe.ply"
+        output = root / "probe.spz"
+        report = root / "report.json"
+        source.write_text(
+            "\n".join(
+                [
+                    "ply",
+                    "format ascii 1.0",
+                    "element vertex 2",
+                    "property float x",
+                    "property float y",
+                    "property float z",
+                    "property float f_dc_0",
+                    "property float f_dc_1",
+                    "property float f_dc_2",
+                    "property float opacity",
+                    "property float scale_0",
+                    "property float scale_1",
+                    "property float scale_2",
+                    "property float rot_0",
+                    "property float rot_1",
+                    "property float rot_2",
+                    "property float rot_3",
+                    "end_header",
+                    "0 0 0 0.5 0 0 2 -3 -3 -3 1 0 0 0",
+                    "0.1 0.2 0.3 0 0.5 0 2 -3 -3 -3 1 0 0 0",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [node, str(script), "--input", str(source), "--output", str(output), "--vendor-root", str(vendor), "--report", str(report)],
+            text=True,
+            capture_output=True,
+            timeout=45,
+        )
+        payload = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else {}
+        return {
+            "ok": completed.returncode == 0 and output.is_file() and output.stat().st_size > 0 and payload.get("splats") == 2,
+            "node": subprocess.run([node, "--version"], text=True, capture_output=True, timeout=10).stdout.strip(),
+            "input_format": payload.get("input_format"),
+            "splats": payload.get("splats"),
+            "output_size_bytes": output.stat().st_size if output.is_file() else 0,
+            "stderr": completed.stderr[-500:],
+        }
 
 
 def _nvidia_probe() -> dict[str, Any]:

@@ -1153,7 +1153,7 @@ def run_scene_splat_optimize(config: PlatformConfig, store: PlatformStore, task:
         "viewer_probe": {},
         "packed_output": None,
         "pack_status": "not_available",
-        "recommendation": "Spark can load full 3DGS PLY manually. A native server-side SPZ/KSPLAT exporter is still required before making it the default asset.",
+        "recommendation": "The full 3DGS PLY is being converted to a browser-native SPZ asset.",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     _task_progress(store, task, 46, "导出SPZ", "正在把完整 3DGS PLY 转换成轻量 SPZ")
@@ -1213,7 +1213,7 @@ def _export_scene_spz(config: PlatformConfig, store: PlatformStore, task_id: str
         str(export_report_path),
     ]
     try:
-        completed = subprocess.run(command, cwd=str(config.app_root), text=True, capture_output=True, timeout=240)
+        completed = subprocess.run(command, cwd=str(config.app_root), text=True, capture_output=True, timeout=1800)
     except Exception as exc:
         return {"ok": False, "error": f"SPZ exporter failed to run: {type(exc).__name__}: {exc}"}
     if completed.returncode != 0 or not output_path.is_file():
