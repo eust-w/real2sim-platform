@@ -102,8 +102,10 @@
     controls.target.set(0, 0, 0);
     controls.enableDamping = true;
 
-    scene.add(new THREE.GridHelper(4, 16, 0x2f6d68, 0x24313a));
-    scene.add(new THREE.AxesHelper(1.2));
+    const gridHelper = new THREE.GridHelper(4, 16, 0x2f6d68, 0x24313a);
+    const axesHelper = new THREE.AxesHelper(1.2);
+    scene.add(gridHelper);
+    scene.add(axesHelper);
     const light = new THREE.DirectionalLight(0xffffff, 1.5);
     light.position.set(3, 4, 2);
     scene.add(light);
@@ -211,7 +213,7 @@
       status.textContent = rendererStatusText(manifest, assets.length);
       hint.textContent = viewerHint(assets, renderable);
       const recommended = renderable[0] || null;
-      const previewImage = renderable.find(isScenePreviewImage) || null;
+      const previewImage = preferredScenePreviewImage(renderable);
       const preferred = recommended?.autoload !== false
         ? recommended
         : previewImage || renderable.find((item) => item.autoload !== false) || null;
@@ -264,6 +266,8 @@
       }
       if (loadedObject) scene.remove(loadedObject);
       const suffix = (asset.name || asset.path || "").toLowerCase().split(".").pop();
+      const imageAsset = ["png", "jpg", "jpeg", "webp"].includes(suffix);
+      if (!imageAsset) prepareGeometryScene();
       debug.loaded = false;
       debug.assetName = asset.name || asset.path || "asset";
       debug.pointCount = 0;
@@ -297,8 +301,8 @@
         status.textContent = "这是仿真描述文件，用于 MotrixSim/MuJoCo 加载，不会替换当前 3D 预览";
       } else if (suffix === "py") {
         status.textContent = "这是控制脚本，用于运行策略或示例，不会替换当前 3D 预览";
-      } else if (["png", "jpg", "jpeg", "webp"].includes(suffix)) {
-        addImagePlane(asset);
+      } else if (imageAsset) {
+        await addImagePreview(asset);
       } else {
         addPlaceholder(`当前浏览器预览暂不支持 .${suffix || "file"} 文件`);
       }
@@ -346,17 +350,25 @@
       hint.textContent = "这个条目不会替换当前 3D 场景。真正可旋转预览的是 GLB/OBJ/PLY/3DGS 等几何资产。";
     }
 
-    function addImagePlane(asset) {
+    async function addImagePreview(asset) {
       if (loadedObject) scene.remove(loadedObject);
-      const texture = new THREE.TextureLoader().load(asset.url);
-      const geometry = new THREE.PlaneGeometry(1.6, 0.9);
-      const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
-      loadedObject = new THREE.Mesh(geometry, material);
-      scene.add(loadedObject);
+      loadedObject = null;
+      status.textContent = `图片预览 · loading ${asset.name || "asset"}`;
+      const texture = await withLoadingTimeout(new THREE.TextureLoader().loadAsync(asset.url), `loading timed out: ${asset.name || "asset"}`);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      scene.background = texture;
+      gridHelper.visible = false;
+      axesHelper.visible = false;
       debug.backend = "image_preview";
       debug.loaded = true;
       debug.pointCount = 0;
       status.textContent = `图片预览 · ${asset.name || "asset"}`;
+    }
+
+    function prepareGeometryScene() {
+      scene.background = null;
+      gridHelper.visible = true;
+      axesHelper.visible = true;
     }
 
     function setRenderQualityForAsset(asset) {
@@ -384,6 +396,18 @@
         || name.endsWith("/source_gs_preview.png")
         || name === "pointcloud_projection_preview.png"
         || name.endsWith("/pointcloud_projection_preview.png");
+    }
+
+    function preferredScenePreviewImage(assets) {
+      const byName = (expected) => assets.find((asset) => {
+        const name = String(asset?.name || asset?.path || "").toLowerCase();
+        return name === expected || name.endsWith(`/${expected}`);
+      });
+      return byName("source_gs_preview.png")
+        || byName("scene_cover.png")
+        || byName("pointcloud_projection_preview.png")
+        || assets.find(isScenePreviewImage)
+        || null;
     }
 
     async function loadSparkOrFallback(asset, suffix) {

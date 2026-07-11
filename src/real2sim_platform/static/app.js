@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260711-poc-product-v2";
+const STATIC_VERSION = "20260711-poc-product-v3";
 
 const state = {
   datasets: [],
