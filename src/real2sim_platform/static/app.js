@@ -690,6 +690,7 @@ async function saveSceneComposition() {
           transform: cloneValue(asset.transform),
           physics: cloneValue(asset.physics || {}),
         })),
+        environment_collision_mode: $("compositionEnvironmentMode")?.value || "isolated_task_workspace",
         validation_steps: 120,
       }),
     });

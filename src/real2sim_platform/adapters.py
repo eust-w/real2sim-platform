@@ -917,6 +917,7 @@ def run_scene_composition(config: PlatformConfig, store: PlatformStore, task: di
         robot_spec=composition.get("robot") or {},
         asset_specs=asset_specs,
         source_paths=source_paths,
+        environment_collision_mode=str(composition.get("environment_collision_mode") or "isolated_task_workspace"),
         validation_steps=int(params.get("validation_steps", 120)),
         emit=emit,
     )

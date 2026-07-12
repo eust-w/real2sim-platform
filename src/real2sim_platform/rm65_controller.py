@@ -143,7 +143,13 @@ class RM65PickPlaceRuntime:
         self.model.step_n(self.data, 120)
         self.simulation_time = 120 * float(self.model.options.timestep)
         self.renderer.sync(self.data, wait=True)
-        return cube, target, float(self.cube_position()[2])
+        settled_z = float(self.cube_position()[2])
+        if not np.isfinite(settled_z) or abs(settled_z - float(cube_home[2])) > 0.08:
+            raise RuntimeError(
+                f"抓取方块静置高度异常：初始 z={float(cube_home[2]):.4f}，静置 z={settled_z:.4f}；"
+                "请改用独立任务工作区，或重新布置资产以避开重建碰撞体"
+            )
+        return cube, target, settled_z
 
     def capture_frame(self) -> np.ndarray:
         capture = self.render_camera.capture()
@@ -169,9 +175,15 @@ class RM65PickPlaceRuntime:
 
     def apply_action(self, action: np.ndarray, *, hold_steps: int = CONTROL_HOLD_STEPS) -> None:
         action = self.clip_action(action)
+        if not np.isfinite(action).all():
+            raise RuntimeError("MotrixSim RM65 control action contains NaN or infinity")
+        if not np.isfinite(np.asarray(self.data.dof_pos)).all() or not np.isfinite(np.asarray(self.data.dof_vel)).all():
+            raise RuntimeError("MotrixSim scene state became non-finite before applying the RM65 action")
         for actuator, value in zip(self.actuators, action):
             actuator.set_ctrl(self.data, float(value))
         self.model.step_n(self.data, hold_steps)
+        if not np.isfinite(np.asarray(self.data.dof_pos)).all() or not np.isfinite(np.asarray(self.data.dof_vel)).all():
+            raise RuntimeError("MotrixSim scene state became non-finite after applying the RM65 action")
         self.simulation_time += hold_steps * float(self.model.options.timestep)
 
     def cube_position(self) -> np.ndarray:

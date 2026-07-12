@@ -4,6 +4,7 @@ import concurrent.futures
 import importlib.util
 import json
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import h5py
@@ -235,6 +236,11 @@ def test_scene_composition_catalog_and_payload_are_registered(tmp_path: Path) ->
             json={"name": "invalid", "robot": {"robot_id": "rm65"}, "assets": [{"catalog_id": "missing", "instance_id": "missing"}]},
         )
         assert invalid.status_code == 400
+        invalid_mode = client.post(
+            f"/api/scenes/{scene['id']}/compose",
+            json={"name": "invalid mode", "robot": {"robot_id": "rm65"}, "environment_collision_mode": "unknown"},
+        )
+        assert invalid_mode.status_code == 400
         queued = client.post(
             f"/api/scenes/{scene['id']}/compose",
             json={
@@ -263,10 +269,18 @@ def _build_real_rm65_composition_package(package: Path) -> tuple[Path, dict]:
     (package / "assets" / "meshes").mkdir(parents=True)
     runtime.parent.mkdir(parents=True)
     runtime.write_text(
-        '<mujoco model="composition"><compiler angle="degree" meshdir="../assets/meshes" autolimits="true"/><option timestep="0.002"/><worldbody><geom type="plane" size="3 3 .1"/></worldbody></mujoco>\n',
+        '<mujoco model="composition"><compiler angle="degree" meshdir="../assets/meshes" autolimits="true"/><option timestep="0.002"/><worldbody><geom name="environment_collision" type="box" pos=".65 0 .4" size=".5 .5 .4"/><body name="legacy_dynamic" pos="0 0 1"><freejoint name="legacy_free"/><geom type="box" size=".1 .1 .1" mass=".2"/></body></worldbody></mujoco>\n',
         encoding="utf-8",
     )
-    (package / "scene_manifest.json").write_text(json.dumps({"assets": [], "simulator_artifacts": {"motrixsim": {"runtime_scene": str(runtime)}}}), encoding="utf-8")
+    (package / "scene_manifest.json").write_text(
+        json.dumps(
+            {
+                "assets": [{"name": "legacy", "role": "added_asset", "runtime": {"body": "legacy_dynamic"}}],
+                "simulator_artifacts": {"motrixsim": {"runtime_scene": str(runtime)}},
+            }
+        ),
+        encoding="utf-8",
+    )
     (package / "motrix_import.json").write_text(json.dumps({"runtime_scene": str(runtime)}), encoding="utf-8")
     asset_specs = [
         {
@@ -296,6 +310,12 @@ def test_real_rm65_scene_composition_loads_and_steps_in_both_runtimes(tmp_path: 
     assert result["validation"]["mujoco"]["status"] == "loaded_and_stepped"
     assert result["validation"]["motrixsim"]["status"] == "loaded_and_stepped"
     assert result["collection_ready"] is True
+    assert result["composition"]["environment"]["mode"] == "isolated_task_workspace"
+    assert result["composition"]["environment"]["removed_legacy_asset_bodies"] == ["legacy_dynamic"]
+    root = ET.parse(runtime).getroot()
+    assert root.find("./worldbody/body[@name='legacy_dynamic']") is None
+    assert root.find("./worldbody/geom[@name='environment_collision']").get("contype") == "0"
+    assert root.find("./worldbody/geom[@name='composition_ground']").get("contype") == "1"
     model = mujoco.MjModel.from_xml_path(str(runtime))
     assert model.nkey >= 1
     for object_type, name in (
@@ -602,7 +622,10 @@ def test_worker_image_materializes_motrixsim_lfs_assets() -> None:
     assert "REAL2SIM_MOTRIXSIM_PYTHON" in manifest
     assert "REAL2SIM_FFMPEG_BIN" in manifest
     assert "NVIDIA_DRIVER_CAPABILITIES" in manifest
-    assert "compute,utility,graphics" in manifest
+    assert "NVIDIA_DRIVER_CAPABILITIES, value: all" in manifest
+    assert "WGPU_BACKEND, value: vulkan" in manifest
+    assert "XDG_RUNTIME_DIR, value: /tmp/xdg-runtime" in manifest
+    assert "libvulkan1" in dockerfile
     assert "GIT_CONFIG_VALUE_3, value: /opt/motrixsim-docs" in manifest
 
 

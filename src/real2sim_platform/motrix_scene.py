@@ -425,6 +425,7 @@ def build_scene_composition(
     robot_spec: dict[str, Any],
     asset_specs: list[dict[str, Any]],
     source_paths: dict[str, Path] | None,
+    environment_collision_mode: str = "isolated_task_workspace",
     validation_steps: int,
     emit: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
@@ -442,6 +443,7 @@ def build_scene_composition(
     root = tree.getroot()
     if root.tag != "mujoco":
         raise ValueError("scene runtime file is not an MJCF <mujoco> document")
+    environment = _prepare_composition_environment(root, manifest, mode=environment_collision_mode)
     compiler = _ensure_radian_compiler(root)
     emit("Merging the real RM65 articulated model into the MotrixSim scene")
     robot_entry = _merge_rm65_robot(
@@ -514,6 +516,8 @@ def build_scene_composition(
     composition = {
         "schema": SCENE_COMPOSITION_SCHEMA,
         "simulator": "motrixsim",
+        "environment_collision_mode": environment_collision_mode,
+        "environment": environment,
         "robot": robot_entry,
         "assets": entries,
         "controller": "rm65_pick_place_6d_ik" if collection_ready else None,
@@ -533,6 +537,7 @@ def build_scene_composition(
             "robot_body_count": robot_preview["body_count"],
             "robot_mesh_count": robot_preview["mesh_count"],
             "asset_count": len(entries),
+            "environment": environment,
             "collection_ready": collection_ready,
             "runtime_validation": validation,
         },
@@ -562,6 +567,58 @@ def build_scene_composition(
         "validation": validation,
         "composition": composition,
         "collection_ready": collection_ready,
+    }
+
+
+def _prepare_composition_environment(root: ET.Element, manifest: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    if mode not in {"isolated_task_workspace", "reconstructed_collision"}:
+        raise ValueError("environment collision mode must be isolated_task_workspace or reconstructed_collision")
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        worldbody = ET.SubElement(root, "worldbody")
+    legacy_bodies = {
+        str((item.get("runtime") or {}).get("body") or "")
+        for item in manifest.get("assets", [])
+        if isinstance(item, dict) and item.get("role") == "added_asset"
+    }
+    legacy_bodies.discard("")
+    removed_bodies = []
+    for body in list(worldbody):
+        if body.tag == "body" and str(body.get("name") or "") in legacy_bodies:
+            removed_bodies.append(str(body.get("name")))
+            worldbody.remove(body)
+
+    disabled_geoms = 0
+    if mode == "isolated_task_workspace":
+        for geom in root.findall(".//geom"):
+            if str(geom.get("contype") or "1") == "0" and str(geom.get("conaffinity") or "1") == "0":
+                continue
+            geom.set("contype", "0")
+            geom.set("conaffinity", "0")
+            disabled_geoms += 1
+        existing_ground = worldbody.find("./geom[@name='composition_ground']")
+        if existing_ground is not None:
+            worldbody.remove(existing_ground)
+        ET.SubElement(
+            worldbody,
+            "geom",
+            {
+                "name": "composition_ground",
+                "type": "plane",
+                "size": "12 12 0.1",
+                "pos": "0 0 0",
+                "contype": "1",
+                "conaffinity": "1",
+                "group": "0",
+                "friction": "0.9 0.01 0.001",
+                "rgba": "0.18 0.2 0.22 1",
+            },
+        )
+    return {
+        "mode": mode,
+        "removed_legacy_asset_bodies": removed_bodies,
+        "disabled_reconstructed_collision_geoms": disabled_geoms,
+        "task_ground": mode == "isolated_task_workspace",
     }
 
 

@@ -77,6 +77,7 @@ class SceneCompositionRequest(BaseModel):
     name: str | None = None
     robot: SceneCompositionRobotRequest
     assets: list[SceneCompositionAssetRequest] = Field(default_factory=list)
+    environment_collision_mode: str = "isolated_task_workspace"
     validation_steps: int = 120
 
 
@@ -684,6 +685,8 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="scene not found") from exc
         composition = payload.model_dump(exclude_none=True)
+        if composition.get("environment_collision_mode") not in {"isolated_task_workspace", "reconstructed_collision"}:
+            raise HTTPException(status_code=400, detail="environment_collision_mode must be isolated_task_workspace or reconstructed_collision")
         params = {
             "scene_id": scene_id,
             "name": composition.pop("name", None),
