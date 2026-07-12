@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260712-scene-composition-v3";
+const STATIC_VERSION = "20260712-scene-composition-v4";
 
 const state = {
   datasets: [],
@@ -653,7 +653,15 @@ function cloneValue(value) {
 
 function compositionSnapshot() {
   const draft = state.composition;
-  return cloneValue({ robotId: draft.robotId, robotTransform: draft.robotTransform, assets: draft.assets, selectedId: draft.selectedId });
+  return cloneValue({
+    robotId: draft.robotId,
+    robotTransform: draft.robotTransform,
+    assets: draft.assets,
+    selectedId: draft.selectedId,
+    savedSceneId: draft.savedSceneId,
+    collectionReady: draft.collectionReady,
+    pendingTaskId: draft.pendingTaskId,
+  });
 }
 
 function pushCompositionHistory() {
@@ -665,7 +673,7 @@ function pushCompositionHistory() {
 
 function restoreCompositionSnapshot(snapshot) {
   if (!snapshot) return;
-  Object.assign(state.composition, cloneValue(snapshot), { savedSceneId: "", collectionReady: false, pendingTaskId: "" });
+  Object.assign(state.composition, cloneValue(snapshot));
   renderComposition();
 }
 
