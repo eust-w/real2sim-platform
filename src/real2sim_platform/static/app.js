@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260712-scene-composition-v5";
+const STATIC_VERSION = "20260713-scene-composition-performance-v6";
 
 const state = {
   datasets: [],
@@ -37,6 +37,8 @@ const state = {
     hydratedSceneId: "",
     hydratingSceneId: "",
     hydrationError: "",
+    previewQuality: "performance",
+    lastPostedSignature: "",
   },
 };
 
@@ -98,7 +100,9 @@ async function bootstrap() {
   await refresh();
   startTaskEvents();
   clearInterval(state.refreshTimer);
-  state.refreshTimer = setInterval(() => refresh({ quiet: true }).catch((error) => console.warn(error)), 15000);
+  state.refreshTimer = setInterval(() => {
+    if (!document.hidden) refresh({ quiet: true }).catch((error) => console.warn(error));
+  }, 45000);
   state.initialized = true;
 }
 
@@ -106,11 +110,12 @@ function startTaskEvents() {
   state.taskEvents?.close();
   state.taskEvents = new EventSource("/api/events/tasks");
   state.taskEvents.addEventListener("tasks", (event) => {
+    const previousComposition = compositionTaskSignature(state.tasks);
     const previousTerminal = new Set(state.tasks.filter((task) => terminalStatus(task.status)).map((task) => task.id));
     state.tasks = JSON.parse(event.data);
     renderScopedTaskLists();
-    renderOverview();
-    renderComposition();
+    if (activePageId() === "overview") renderOverview();
+    if (activePageId() === "compose" && previousComposition !== compositionTaskSignature(state.tasks)) renderComposition();
     if (state.selectedTaskId && $("taskDrawer")?.classList.contains("open")) showTask(state.selectedTaskId, { preservePreview: true }).catch(console.warn);
     if (state.tasks.some((task) => terminalStatus(task.status) && !previousTerminal.has(task.id))) refresh({ quiet: true }).catch(console.warn);
   });
@@ -119,6 +124,17 @@ function startTaskEvents() {
 
 function terminalStatus(status) {
   return ["succeeded", "failed", "failed_recovered", "canceled"].includes(status);
+}
+
+function activePageId() {
+  return document.querySelector(".page.active")?.id || "";
+}
+
+function compositionTaskSignature(tasks) {
+  return tasks
+    .filter((task) => taskScopes.compositionTaskList.includes(task.type))
+    .map((task) => `${task.id}:${task.status}:${task.progress ?? ""}:${task.stage ?? ""}:${task.updated_at ?? ""}`)
+    .join("|");
 }
 
 function roleLabel(role) {
@@ -182,7 +198,7 @@ function renderAll() {
   renderDatasetList();
   renderReconstructDatasetCards();
   renderSceneList();
-  renderComposition();
+  if (activePageId() === "compose") renderComposition();
   renderPreflightSummary();
   renderCollectionDatasets();
   renderModelList();
@@ -216,6 +232,9 @@ function setActionAvailability(id, enabled, reason) {
 function switchTab(tabId) {
   document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tabId));
   document.querySelectorAll(".page").forEach((page) => page.classList.toggle("active", page.id === tabId));
+  document.querySelectorAll("iframe").forEach((frame) => {
+    frame.contentWindow?.postMessage({ type: "real2sim-viewer-visibility", visible: frame.closest(".page")?.id === tabId }, location.origin);
+  });
   refreshSelectionBars();
   if (tabId === "compose") renderComposition();
 }
@@ -399,6 +418,7 @@ function resetCompositionForScene(sceneId) {
     hydratedSceneId: "",
     hydratingSceneId: "",
     hydrationError: "",
+    lastPostedSignature: "",
   });
 }
 
@@ -472,6 +492,11 @@ function renderComposition() {
   if (!$("composeRobotList")) return;
   ensureCompositionDraft();
   const draft = state.composition;
+  document.querySelectorAll("[data-compose-quality]").forEach((button) => {
+    const active = button.dataset.composeQuality === draft.previewQuality;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
   const baseScene = state.scenes.find((scene) => scene.id === draft.baseSceneId);
   const baseSelect = $("composeBaseScene");
   if (baseSelect && baseScene) baseSelect.value = baseScene.id;
@@ -531,14 +556,21 @@ function renderComposition() {
 function renderCompositionPreview(baseScene) {
   const iframe = $("compositionPreview");
   if (!iframe) return;
+  if (activePageId() !== "compose") return;
   if (!baseScene) {
     iframe.removeAttribute("src");
+    iframe.dataset.previewKey = "";
+    state.composition.lastPostedSignature = "";
     return;
   }
-  if (state.composition.previewSceneId !== baseScene.id || !iframe.src.includes(STATIC_VERSION)) {
+  const previewQuality = state.composition.previewQuality === "full" ? "full" : "performance";
+  const previewKey = `${baseScene.id}:${previewQuality}`;
+  if (iframe.dataset.previewKey !== previewKey || !iframe.src.includes(STATIC_VERSION)) {
     state.composition.previewSceneId = baseScene.id;
-    iframe.src = `/static/scene-viewer.html?v=${STATIC_VERSION}&embedded=1&composer=1&scene_id=${encodeURIComponent(baseScene.id)}`;
-    iframe.onload = () => postCompositionDraft();
+    iframe.dataset.previewKey = previewKey;
+    state.composition.lastPostedSignature = "";
+    iframe.src = `/static/scene-viewer.html?v=${STATIC_VERSION}&embedded=1&composer=1&quality=${previewQuality}&scene_id=${encodeURIComponent(baseScene.id)}`;
+    iframe.onload = () => postCompositionDraft({ force: true });
     loadCompositionBounds(baseScene.id).catch((error) => console.warn(error));
   } else {
     postCompositionDraft();
@@ -553,10 +585,19 @@ async function loadCompositionBounds(sceneId) {
   state.composition.bounds = min.length === 3 && max.length === 3 && [...min, ...max].every(Number.isFinite) ? { min, max } : null;
 }
 
-function postCompositionDraft() {
+function postCompositionDraft({ force = false } = {}) {
   const iframe = $("compositionPreview");
   if (!iframe?.contentWindow) return;
   const draft = state.composition;
+  const signature = JSON.stringify({
+    quality: draft.previewQuality,
+    robotId: draft.robotId,
+    robotTransform: draft.robotTransform,
+    assets: draft.assets,
+    selectedId: draft.selectedId,
+    tool: draft.tool,
+  });
+  if (!force && signature === draft.lastPostedSignature) return;
   const robot = state.robots.find((item) => item.id === draft.robotId);
   const robotPayload = robot ? {
     ...robot,
@@ -593,6 +634,7 @@ function postCompositionDraft() {
     selected_id: draft.selectedId,
     tool: draft.tool,
   }, location.origin);
+  draft.lastPostedSignature = signature;
 }
 
 function selectedCompositionObject() {
@@ -2305,6 +2347,18 @@ async function handleBodyClick(event) {
 
   const composeRemove = event.target.closest("[data-compose-remove]");
   if (composeRemove) removeCompositionObject(composeRemove.dataset.composeRemove);
+
+  const composeQuality = event.target.closest("[data-compose-quality]");
+  if (composeQuality) {
+    const quality = composeQuality.dataset.composeQuality === "full" ? "full" : "performance";
+    if (state.composition.previewQuality !== quality) {
+      state.composition.previewQuality = quality;
+      state.composition.previewSceneId = "";
+      state.composition.lastPostedSignature = "";
+      renderComposition();
+      toast(quality === "full" ? "已切换精细预览，将加载完整真实 3DGS" : "已切换流畅预览，使用真实轻量视觉资产");
+    }
+  }
 
   const composeTool = event.target.closest("[data-compose-tool]");
   if (composeTool) {

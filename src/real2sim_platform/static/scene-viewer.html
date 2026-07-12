@@ -76,6 +76,14 @@
     const coverMode = params.get("cover") === "1";
     const coverView = params.get("cover_view") || "hero";
     const probeFull = params.get("probe_full") === "1";
+    const qualityMode = params.get("quality") === "full" ? "full" : composerMode ? "performance" : "full";
+    let parentVisible = true;
+    let renderActiveUntil = performance.now() + 3500;
+    let lastRenderAt = 0;
+    let renderedFrames = 0;
+    let frameWindowStart = performance.now();
+    let frameWindowCount = 0;
+    document.body.dataset.viewerQuality = qualityMode;
     if (coverMode || composerMode) document.getElementById("hud").style.display = "none";
     setupHudPanel();
     if (embeddedMode || innerWidth <= 640) setHudCollapsed(true);
@@ -102,6 +110,9 @@
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 0, 0);
     controls.enableDamping = true;
+    controls.addEventListener("start", () => wakeRenderer(60000));
+    controls.addEventListener("change", () => wakeRenderer(500));
+    controls.addEventListener("end", () => wakeRenderer(1000));
 
     const gridHelper = new THREE.GridHelper(4, 16, 0x2f6d68, 0x24313a);
     const axesHelper = new THREE.AxesHelper(1.2);
@@ -140,9 +151,16 @@
       errors: [],
       warnings: [],
       canvas: { width: 0, height: 0 },
+      qualityMode,
+      renderStats: { fps: 0, renderedFrames: 0, targetFps: composerMode ? 10 : 20 },
     };
     window.real2simViewerDebug = debug;
     window.real2simViewerDebug.snapshot = () => ({ ...debug, canvas: { ...debug.canvas } });
+    addEventListener("message", (event) => {
+      if (event.origin !== location.origin || event.data?.type !== "real2sim-viewer-visibility") return;
+      parentVisible = event.data.visible !== false;
+      if (parentVisible) wakeRenderer(1200);
+    });
     if (composerMode) setupCompositionEditor();
 
     function setupHudPanel() {
@@ -294,6 +312,7 @@
         return;
       }
       const loadId = ++loadSequence;
+      wakeRenderer(3500);
       document.body.dataset.viewerLoaded = "false";
       if (loadedObject) contentRoot.remove(loadedObject);
       clearOverlays();
@@ -348,6 +367,7 @@
     function markViewerReady(backend) {
       document.body.dataset.viewerBackend = backend;
       document.body.dataset.viewerLoaded = "true";
+      wakeRenderer(1400);
     }
 
     async function loadAssetWithSceneFallback(asset, assets, options = {}) {
@@ -438,7 +458,8 @@
     function setRenderQualityForAsset(asset) {
       const sizeBytes = Number(asset?.size_bytes || 0);
       const heavy = shouldUseSparkForPly(asset) || sizeBytes > 80 * 1024 * 1024;
-      renderer.setPixelRatio(heavy ? 1 : basePixelRatio);
+      const performanceCap = composerMode && qualityMode === "performance" ? 1.25 : basePixelRatio;
+      renderer.setPixelRatio(heavy ? 1 : Math.min(basePixelRatio, performanceCap));
       renderer.setSize(innerWidth, innerHeight);
     }
 
@@ -659,6 +680,7 @@
       });
 
       renderer.domElement.addEventListener("pointerdown", (event) => {
+        wakeRenderer(60000);
         const hit = compositionHit(event, raycaster, pointer);
         if (!hit) return;
         selectDraftObject(hit.userData.compositionInstanceId, true);
@@ -686,6 +708,7 @@
 
       renderer.domElement.addEventListener("pointermove", (event) => {
         if (!compositionDrag) return;
+        wakeRenderer(60000);
         const transform = cloneTransform(compositionDrag.transform);
         if (composerTool === "move") {
           setPointer(event, pointer);
@@ -713,6 +736,7 @@
         if (!compositionDrag) return;
         const instanceId = compositionDrag.instanceId;
         compositionDrag = null;
+        wakeRenderer(1200);
         controls.enabled = true;
         if (renderer.domElement.hasPointerCapture?.(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
         parent.postMessage({ type: "real2sim-composition-transform-end", instance_id: instanceId }, location.origin);
@@ -777,6 +801,7 @@
       document.body.dataset.compositionDraftCount = String(draftObjects.size);
       document.body.dataset.compositionBounds = JSON.stringify(debug.compositionObjects);
       frameCompositionDraft(false);
+      wakeRenderer(1200);
     }
 
     function frameCompositionDraft(force) {
@@ -950,6 +975,8 @@
     function assetPriority(asset) {
       const name = String(asset?.name || asset?.path || "").toLowerCase();
       const role = String(asset?.role || "").toLowerCase();
+      const suffix = name.split(".").pop();
+      if (composerMode && qualityMode === "performance" && role === "visual_fallback" && ["glb", "gltf", "obj"].includes(suffix)) return 30;
       if (role === "viewer_preview" && name.endsWith(".glb")) return 20;
       if (role === "rollout_gif" || role === "rollout_final_frame") return 14;
       if (name.endsWith("_threejs_rgb.ply")) return 12;
@@ -981,18 +1008,43 @@
       return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
     }
 
-    function animate() {
+    function wakeRenderer(duration = 1200) {
+      renderActiveUntil = Math.max(renderActiveUntil, performance.now() + duration);
+    }
+
+    function animate(timestamp = performance.now()) {
+      requestAnimationFrame(animate);
+      if (!parentVisible || document.hidden) return;
+      const active = compositionDrag || timestamp < renderActiveUntil;
+      const interval = active ? (composerMode ? 33 : 16) : (composerMode ? 100 : 50);
+      if (timestamp - lastRenderAt < interval) return;
+      lastRenderAt = timestamp;
       controls.update();
       selectionHelper?.update();
       debug.canvas = { width: renderer.domElement.width, height: renderer.domElement.height };
       renderer.render(scene, camera);
-      requestAnimationFrame(animate);
+      renderedFrames += 1;
+      frameWindowCount += 1;
+      if (timestamp - frameWindowStart >= 1000) {
+        debug.renderStats = {
+          fps: Math.round((frameWindowCount * 1000) / Math.max(1, timestamp - frameWindowStart)),
+          renderedFrames,
+          targetFps: active ? (composerMode ? 30 : 60) : (composerMode ? 10 : 20),
+        };
+        frameWindowStart = timestamp;
+        frameWindowCount = 0;
+      }
     }
 
     addEventListener("resize", () => {
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
+      wakeRenderer(1200);
+    });
+
+    addEventListener("visibilitychange", () => {
+      if (!document.hidden) wakeRenderer(1200);
     });
 
     main().catch(showError);

@@ -422,6 +422,11 @@
               <span class="toolbar-separator"></span>
               <button id="composeUndo" type="button">撤销</button>
               <button id="composeRedo" type="button">重做</button>
+              <span class="toolbar-separator"></span>
+              <div class="composition-quality" role="group" aria-label="预览质量">
+                <button type="button" data-compose-quality="performance" class="active" aria-pressed="true" title="使用场景包中的真实轻量视觉资产，适合布置和拖拽">流畅</button>
+                <button type="button" data-compose-quality="full" aria-pressed="false" title="加载完整真实 3DGS 资产，适合检查重建细节">精细</button>
+              </div>
               <span id="composeStageStatus" class="composition-stage-status">等待基础场景</span>
             </div>
             <div id="compositionCanvasWrap" class="composition-canvas-wrap">
