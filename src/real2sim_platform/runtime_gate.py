@@ -219,6 +219,7 @@ def _simulator_probe() -> dict[str, Any]:
         motrix_model = load_model(str(scene_path))
         motrix_data = SceneData(motrix_model)
         motrix_model.cameras[0].set_render_target("image", 160, 120)
+        motrix_pixels = None
         with RenderApp(headless=True) as motrix_renderer:
             motrix_renderer.launch(motrix_model)
             for _ in range(8):
@@ -229,6 +230,8 @@ def _simulator_probe() -> dict[str, Any]:
             if motrix_image is None:
                 raise RuntimeError("MotrixSim headless renderer did not return an image")
             motrix_pixels = np.asarray(motrix_image.pixels, dtype=np.uint8)[:, :, :3]
+        if motrix_pixels is None:
+            raise RuntimeError("MotrixSim headless renderer exited before returning pixels")
         motrix_mean = float(motrix_pixels.mean())
         motrix_std = float(motrix_pixels.std())
         motrix_nonzero = int(np.count_nonzero(motrix_pixels))

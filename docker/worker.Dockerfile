@@ -88,6 +88,12 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/Motphys/motrix
     ln -s /opt/conda/bin/python /opt/real2sim_paper_runtime/envs/anysplat/bin/python && \
     ln -s /opt/conda/bin/pip /opt/real2sim_paper_runtime/envs/anysplat/bin/pip
 
+# Keep the stable CUDA/ML dependency layers reusable when only the MotrixSim
+# graphics runtime changes.
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends libvulkan1 && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 RUN test "$(node --version)" = "v20.19.2"
 
@@ -111,7 +117,7 @@ ENV REAL2SIM_PLATFORM_BUILD_ID=${BUILD_ID} \
     REAL2SIM_FFMPEG_BIN=/usr/bin/ffmpeg \
     MUJOCO_GL=egl \
     PYOPENGL_PLATFORM=egl \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+    NVIDIA_DRIVER_CAPABILITIES=all
 
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin real2sim && \
     chown -R 10001:10001 /app

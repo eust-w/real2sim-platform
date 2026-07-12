@@ -174,7 +174,8 @@ spec:
         - name: runtime-gate
           image: __WORKER_IMAGE__
           imagePullPolicy: IfNotPresent
-          command: [real2sim-runtime-gate, --mode, bootstrap]
+          command: [/bin/bash, -lc]
+          args: ["install -d -m 700 /tmp/xdg-runtime && exec real2sim-runtime-gate --mode bootstrap"]
           env: &worker-env
             - {name: REAL2SIM_PLATFORM_CONFIG, value: /etc/real2sim/config.toml}
             - {name: REAL2SIM_WORKER_MODE, value: worker}
@@ -186,7 +187,9 @@ spec:
             - {name: REAL2SIM_FFMPEG_BIN, value: /usr/bin/ffmpeg}
             - {name: MUJOCO_GL, value: egl}
             - {name: PYOPENGL_PLATFORM, value: egl}
-            - {name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility,graphics"}
+            - {name: NVIDIA_DRIVER_CAPABILITIES, value: all}
+            - {name: WGPU_BACKEND, value: vulkan}
+            - {name: XDG_RUNTIME_DIR, value: /tmp/xdg-runtime}
             - {name: HF_HOME, value: /var/lib/real2sim-poc/cache/huggingface}
             - {name: HF_HUB_DISABLE_XET, value: "1"}
             - {name: HOME, value: /var/lib/real2sim-poc/cache/home}
