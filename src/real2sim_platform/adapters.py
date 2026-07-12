@@ -1022,11 +1022,17 @@ def run_simulator_validation(config: PlatformConfig, store: PlatformStore, task:
             root / "motrix_scene.json",
             root / "motrix_import.json",
             root / "scene.json",
+            root / "scene.xml",
+            root / "mjcf" / "scene.xml",
+            root / "mujoco" / "scene.xml",
             root / "simulator_assets" / "rm65_table_pick_place.xml",
             root / "motrixsim" / "motrix_import.json",
             root / "motrixsim" / "scene.json",
             *root.glob("*motrix*.json"),
             *root.glob("motrixsim/*.json"),
+            *root.glob("*.xml"),
+            *root.glob("mjcf/*.xml"),
+            *root.glob("mujoco/*.xml"),
             *root.glob("simulator_assets/*.xml"),
         ]
         report["simulators"]["motrixsim"] = _validate_motrixsim_asset(candidates, level=level)
@@ -1037,6 +1043,14 @@ def run_simulator_validation(config: PlatformConfig, store: PlatformStore, task:
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     store.add_artifact(task_id=task["id"], name="validation_report.json", path=path, kind="json")
     _task_progress(store, task, 95, "生成报告", "仿真校验报告已生成")
+    if level == "runtime_required" and not report["ok"]:
+        failures = []
+        for simulator, result in report["simulators"].items():
+            if result.get("ok"):
+                continue
+            runtime = result.get("runtime") or {}
+            failures.append(f"{simulator}: {runtime.get('error') or result.get('error') or runtime.get('status') or 'validation failed'}")
+        raise RuntimeError("runtime_required 仿真校验未通过；" + "; ".join(failures))
     return {"ok": report["ok"], "report_path": str(path), "report": report}
 
 
@@ -3018,10 +3032,13 @@ def _validate_mujoco_asset(candidates: list[Path], *, level: str) -> dict[str, A
 
 def _validate_motrixsim_asset(candidates: list[Path], *, level: str) -> dict[str, Any]:
     descriptor = _validate_sim_asset(candidates, required_suffix=".json")
+    runtime_scene = next((path for path in candidates if path.is_file() and path.suffix.lower() == ".xml"), None)
     if level == "smoke":
+        if not descriptor["ok"] and runtime_scene is not None:
+            descriptor = _validate_sim_asset([runtime_scene], required_suffix=".xml")
+            descriptor["artifact_kind"] = "mjcf"
         descriptor["level_effective"] = "smoke"
         return descriptor
-    runtime_scene = next((path for path in candidates if path.is_file() and path.suffix.lower() == ".xml"), None)
     if runtime_scene is None:
         return {
             "ok": False,

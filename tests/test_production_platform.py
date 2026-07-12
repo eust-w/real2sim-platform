@@ -513,8 +513,8 @@ def test_runtime_required_validation_steps_mujoco_and_motrixsim(tmp_path: Path) 
     package = tmp_path / "runtime-scene"
     simulator_assets = package / "simulator_assets"
     simulator_assets.mkdir(parents=True)
-    (package / "scene.json").write_text('{"schema":"motrixsim.scene.v1"}\n', encoding="utf-8")
-    (simulator_assets / "scene.xml").write_text(
+    runtime_scene = simulator_assets / "scene.xml"
+    runtime_scene.write_text(
         '<mujoco model="runtime-validation"><option timestep="0.002"/><worldbody><geom type="plane" size="1 1 .1"/><body pos="0 0 .2"><freejoint/><geom type="sphere" size=".03" mass=".1"/></body></worldbody></mujoco>\n',
         encoding="utf-8",
     )
@@ -524,7 +524,7 @@ def test_runtime_required_validation_steps_mujoco_and_motrixsim(tmp_path: Path) 
             "/api/tasks",
             json={
                 "type": "simulator_validation",
-                "params": {"scene_path": str(package), "simulators": ["mujoco", "motrixsim"], "level": "runtime_required"},
+                "params": {"scene_path": str(runtime_scene), "simulators": ["mujoco", "motrixsim"], "level": "runtime_required"},
             },
         ).json()
         for _ in range(80):
@@ -537,6 +537,27 @@ def test_runtime_required_validation_steps_mujoco_and_motrixsim(tmp_path: Path) 
     assert simulators["mujoco"]["runtime"]["status"] == "loaded"
     assert simulators["motrixsim"]["runtime"]["status"] == "loaded_and_stepped"
     assert simulators["motrixsim"]["runtime"]["steps"] == 8
+
+
+def test_runtime_required_validation_fails_task_when_runtime_artifact_is_missing(tmp_path: Path) -> None:
+    package = tmp_path / "missing-runtime-scene"
+    package.mkdir()
+    config = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace", allowed_path_roots=(tmp_path,))
+    with TestClient(create_app(config)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "type": "simulator_validation",
+                "params": {"scene_path": str(package), "simulators": ["motrixsim"], "level": "runtime_required"},
+            },
+        ).json()
+        for _ in range(80):
+            task = client.get(f"/api/tasks/{created['id']}").json()
+            if task["status"] in {"succeeded", "failed"}:
+                break
+            __import__("time").sleep(0.1)
+    assert task["status"] == "failed"
+    assert "runtime_required" in task["error"]
 
 
 def test_production_artifact_index_includes_viewer_dataset_and_model_outputs(tmp_path: Path) -> None:
