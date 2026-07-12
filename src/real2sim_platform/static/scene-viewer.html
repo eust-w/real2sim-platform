@@ -124,6 +124,7 @@
     let selectionHelper = null;
     let composerTool = "select";
     let compositionDrag = null;
+    let compositionFrameKey = "";
     let manifestAssets = [];
     let manifestBounds = null;
     let sourceUpAxis = "Z";
@@ -536,7 +537,10 @@
       clearOverlays();
       // Composer mode rebuilds these objects from the editable draft. Loading
       // manifest overlays as well would duplicate robots and task assets.
-      if (composerMode) return;
+      if (composerMode) {
+        frameCompositionDraft(true);
+        return;
+      }
       if (!loadedObject) return;
       const overlays = assets.filter((asset) => ["added_asset", "robot"].includes(asset?.role));
       for (const asset of overlays) {
@@ -772,6 +776,36 @@
       });
       document.body.dataset.compositionDraftCount = String(draftObjects.size);
       document.body.dataset.compositionBounds = JSON.stringify(debug.compositionObjects);
+      frameCompositionDraft(false);
+    }
+
+    function frameCompositionDraft(force) {
+      if (!composerMode || !draftObjects.size) return;
+      const frameKey = [...draftObjects.keys()].sort().join("|");
+      if (!force && frameKey === compositionFrameKey) return;
+      fitRoot.position.set(0, 0, 0);
+      fitRoot.scale.set(1, 1, 1);
+      fitRoot.updateMatrixWorld(true);
+      const box = new THREE.Box3();
+      for (const object of draftObjects.values()) box.expandByObject(object);
+      if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return;
+      const sphere = new THREE.Sphere();
+      box.getBoundingSphere(sphere);
+      const radius = Math.max(0.35, sphere.radius);
+      const scale = 1.45 / radius;
+      fitRoot.scale.setScalar(scale);
+      fitRoot.position.copy(sphere.center).multiplyScalar(-scale);
+      controls.target.set(0, 0, 0);
+      camera.position.set(2.8, 2.2, 2.8);
+      controls.update();
+      compositionFrameKey = frameKey;
+      debug.framing = "composition_draft";
+      debug.compositionFocus = {
+        objectCount: draftObjects.size,
+        radius,
+        scale,
+      };
+      document.body.dataset.compositionFraming = "composition_draft";
     }
 
     function selectDraftObject(instanceId, notify) {

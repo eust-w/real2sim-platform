@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260712-scene-composition-v2";
+const STATIC_VERSION = "20260712-scene-composition-v3";
 
 const state = {
   datasets: [],
