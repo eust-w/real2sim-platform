@@ -842,4 +842,10 @@ def test_real_rm65_physical_collection_writes_act_hdf5(tmp_path: Path) -> None:
         assert root.attrs["opencv_decode_color_order"] == "BGR"
         assert root.attrs["action_alignment"] == ACTION_ALIGNMENT
         assert root.attrs["control_hold_steps"] == CONTROL_HOLD_STEPS
+        import cv2
+
+        first_frame = cv2.imdecode(np.asarray(root["/observations/images/overview"][0], dtype=np.uint8), cv2.IMREAD_COLOR)
+        assert first_frame is not None and float(first_frame.std()) > 5.0
+        blue, green, red = [channel.astype(np.int16) for channel in cv2.split(first_frame)]
+        assert int(np.count_nonzero((red > green + 8) & (red > blue + 12))) > 100
     assert (tmp_path / "collection/episode_0.mp4").stat().st_size > 0

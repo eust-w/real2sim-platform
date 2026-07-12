@@ -595,6 +595,9 @@ def _prepare_composition_environment(root: ET.Element, manifest: dict[str, Any],
                 continue
             geom.set("contype", "0")
             geom.set("conaffinity", "0")
+            if "collision" in str(geom.get("name") or "").lower() or str(geom.get("group") or "") == "3":
+                geom.set("group", "3")
+                geom.set("rgba", "0 0 0 0")
             disabled_geoms += 1
         existing_ground = worldbody.find("./geom[@name='composition_ground']")
         if existing_ground is not None:

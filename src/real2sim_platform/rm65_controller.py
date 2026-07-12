@@ -82,7 +82,7 @@ class RM65PickPlaceRuntime:
         self.renderer = self._render_context.__enter__()
         self.renderer.launch(self.model)
         self.render_camera = self.renderer.get_camera(camera_index)
-        self.renderer.sync(self.data, wait=True)
+        self._warmup_renderer()
         self.simulation_time = 0.0
 
     @staticmethod
@@ -112,6 +112,13 @@ class RM65PickPlaceRuntime:
         if self.home_keyframe is not None:
             self.home_keyframe.apply(self.data)
         self.model.forward_kinematic(self.data)
+
+    def _warmup_renderer(self) -> None:
+        for _ in range(4):
+            capture = self.render_camera.capture()
+            self.renderer.sync(self.data, wait=True)
+            capture.take_image()
+            time.sleep(0.15)
 
     def close(self) -> None:
         self._render_context.__exit__(None, None, None)
