@@ -225,7 +225,7 @@
           status.textContent = `已添加资产 · ${selected.name || "asset"} · 与 MotrixSim 场景使用同一坐标`;
           return;
         }
-        loadAsset(selected, { manual: true }).then(() => loadSceneOverlays(assets)).catch(showError);
+        loadAssetWithSceneFallback(selected, assets, { manual: true }).then(() => loadSceneOverlays(assets)).catch(showError);
       });
       status.textContent = rendererStatusText(manifest, assets.length);
       hint.textContent = viewerHint(assets, renderable);
@@ -237,7 +237,7 @@
       if (preferred) {
         // Large 3DGS assets remain an explicit user action. Their real cover is
         // a safer first frame than an automatically generated diagnostic mesh.
-        await loadAsset(preferred, { manual: preferred === previewImage });
+        await loadAssetWithSceneFallback(preferred, assets, { manual: preferred === previewImage });
         await loadSceneOverlays(assets);
       }
       else if (renderable[0]) addPlaceholder(`可渲染大文件未自动加载：${renderable[0].name || "asset"} · ${renderable[0].size_label || "unknown size"} · 点击按钮手动加载`);
@@ -297,7 +297,7 @@
       } else if (suffix === "ply") {
         await loadPlyFallback(asset);
       } else if (["spz", "splat", "ksplat", "sog", "zip", "rad"].includes(suffix)) {
-        await withLoadingTimeout(loadSparkOrFallback(asset, suffix), `loading timed out: ${asset.name || "asset"}${size}`);
+        await withLoadingTimeout(loadSparkOrFallback(asset, suffix), `loading timed out: ${asset.name || "asset"}${size}`, 20000);
       } else if (suffix === "glb" || suffix === "gltf") {
         status.textContent = `Three.js fallback · loading ${asset.name}${size}`;
         const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
@@ -324,6 +324,25 @@
         await addImagePreview(asset);
       } else {
         addPlaceholder(`当前浏览器预览暂不支持 .${suffix || "file"} 文件`);
+      }
+    }
+
+    async function loadAssetWithSceneFallback(asset, assets, options = {}) {
+      try {
+        await loadAsset(asset, options);
+        return;
+      } catch (error) {
+        const suffix = String(asset?.name || asset?.path || "").toLowerCase().split(".").pop();
+        const splatFormat = ["spz", "splat", "ksplat", "sog", "zip", "rad"].includes(suffix);
+        const fallback = splatFormat
+          ? assets.find((item) => item?.role === "visual_fallback" && ["glb", "gltf", "obj"].includes(String(item?.name || item?.path || "").toLowerCase().split(".").pop()))
+          : null;
+        if (!fallback || fallback === asset) throw error;
+        const reason = error?.message || String(error);
+        debug.warnings.push(`Spark ${asset.name || "asset"}: ${reason}`);
+        status.textContent = `Spark 未就绪，正在切换 Three.js fallback · ${fallback.name || "mesh"}`;
+        await loadAsset(fallback, { manual: true });
+        status.textContent = `Three.js fallback · ${fallback.name || "mesh"} · SPZ 可手动重试`;
       }
     }
 
