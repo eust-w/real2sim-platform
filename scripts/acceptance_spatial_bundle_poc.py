@@ -73,8 +73,8 @@ def import_scene(run: AcceptanceRun, dataset_id: str) -> dict[str, Any]:
     manifest = run.client.get(f"/api/scenes/{scene_id}/manifest")
     formats = {str(item.get("format") or "").lower() for item in manifest.get("assets", [])}
     names = {str(item.get("name") or "") for item in manifest.get("assets", [])}
-    run.check("场景保留 SPZ 高保真外观层", "spz" in formats or "full_res.spz" in names, names)
-    run.check("场景生成可交互 GLB 回退预览", "glb" in formats or "environment_visual.glb" in names, names)
+    run.check("场景保留 SPZ 高保真外观层", "spz" in formats or "full_res.spz" in names, sorted(names))
+    run.check("场景生成可交互 GLB 回退预览", "glb" in formats or "environment_visual.glb" in names, sorted(names))
     run.report["scenes"].append({"id": scene_id, "role": "spatial_bundle_import", "manifest": manifest})
     return {"scene_id": scene_id, "manifest": manifest, "task": task}
 
