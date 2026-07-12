@@ -74,9 +74,8 @@ def infer(
             max_cube_z = settled_z
             bilateral_steps = 0
             for step in range(steps):
-                runtime.renderer.update_scene(runtime.data, camera="overview")
-                frame = runtime.renderer.render().copy()
-                qpos = np.concatenate([runtime.data.qpos[runtime.qpos_adrs], [runtime.data.qpos[runtime.gripper_qadr]]]).astype(np.float32)
+                frame = runtime.capture_frame()
+                qpos = runtime.joint_state()
                 normalized_qpos = (qpos - np.asarray(stats["qpos_mean"], dtype=np.float32)) / np.asarray(stats["qpos_std"], dtype=np.float32)
                 image = torch.from_numpy(frame).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
                 qpos_tensor = torch.from_numpy(normalized_qpos).unsqueeze(0).float().cuda()
@@ -87,28 +86,26 @@ def infer(
                 action = np.asarray(action, dtype=np.float32)
                 if action.shape != (7,):
                     raise ValueError(f"ACT action shape must be (7,), received {action.shape}")
-                for index in range(7):
-                    action[index] = np.clip(action[index], runtime.ctrl_ranges[index, 0], runtime.ctrl_ranges[index, 1])
-                runtime.data.ctrl[:7] = action
-                for _ in range(CONTROL_HOLD_STEPS):
-                    runtime.mujoco.mj_step(runtime.model, runtime.data)
+                action = runtime.clip_action(action)
+                runtime.apply_action(action)
                 touching = runtime.finger_contacts()
                 bilateral_steps += int(len(touching) == 2)
-                max_cube_z = max(max_cube_z, float(runtime.data.qpos[runtime.cube_qadr + 2]))
+                cube_position = runtime.cube_position()
+                max_cube_z = max(max_cube_z, float(cube_position[2]))
                 all_actions.append(action.copy())
                 frames.append(frame)
                 trajectory.append(
                     {
                         "step": step,
-                        "time": float(runtime.data.time),
+                        "time": runtime.simulation_time,
                         "qpos": qpos.tolist(),
                         "action": action.tolist(),
-                        "cube_pos": runtime.data.qpos[runtime.cube_qadr : runtime.cube_qadr + 3].astype(float).tolist(),
+                        "cube_pos": cube_position.tolist(),
                         "target": target.tolist(),
                         "bilateral_contact": len(touching) == 2,
                     }
                 )
-            final_cube = runtime.data.qpos[runtime.cube_qadr : runtime.cube_qadr + 3].copy()
+            final_cube = runtime.cube_position()
             lift_height = float(max_cube_z - settled_z)
             place_error = float(np.linalg.norm(final_cube - target))
             success = bilateral_steps > 0 and lift_height >= 0.10 and place_error <= 0.05
@@ -132,7 +129,7 @@ def infer(
     nonconstant = bool(len(action_matrix) > 1 and np.max(np.std(action_matrix, axis=0)) > 1e-5)
     report = {
         "schema": "real2sim.discoverse_act_inference.v1",
-        "runtime": "mujoco",
+        "runtime": "motrixsim",
         "scene": str(scene_path),
         "model": str(model_dir),
         "episodes": results,
@@ -150,22 +147,11 @@ def infer(
 
 
 def _reset_randomized(runtime: RM65PickPlaceRuntime) -> tuple[np.ndarray, np.ndarray, float]:
-    runtime.mujoco.mj_resetDataKeyframe(runtime.model, runtime.data, 0)
-    cube = np.array([runtime.rng.uniform(0.645, 0.655), runtime.rng.uniform(-0.010, 0.010), 0.33], dtype=float)
-    target = np.array([runtime.rng.uniform(0.42, 0.51), runtime.rng.uniform(0.13, 0.22), 0.31], dtype=float)
-    runtime.data.qpos[runtime.cube_qadr : runtime.cube_qadr + 3] = cube
-    runtime.data.qpos[runtime.cube_qadr + 3 : runtime.cube_qadr + 7] = np.array([1.0, 0.0, 0.0, 0.0])
-    cube_dof = int(runtime.model.jnt_dofadr[runtime.cube_joint])
-    runtime.data.qvel[cube_dof : cube_dof + 6] = 0
-    runtime.model.body_pos[runtime.target_body] = np.array([target[0], target[1], 0.335])
-    runtime.mujoco.mj_forward(runtime.model, runtime.data)
-    for _ in range(120):
-        runtime.mujoco.mj_step(runtime.model, runtime.data)
-    return cube, target, float(runtime.data.qpos[runtime.cube_qadr + 2])
+    return runtime.reset_randomized()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run DISCOVERSE ACT in the physical RM65 MuJoCo scene")
+    parser = argparse.ArgumentParser(description="Run DISCOVERSE ACT in the physical RM65 MotrixSim scene")
     parser.add_argument("--scene", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--act-root", type=Path, required=True)

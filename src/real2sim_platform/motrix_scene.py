@@ -760,15 +760,14 @@ def _append_composition_primitive(
     worldbody = root.find("worldbody")
     if worldbody is None:
         worldbody = ET.SubElement(root, "worldbody")
-    body = ET.SubElement(
-        worldbody,
-        "body",
-        {
-            "name": runtime_name,
-            "pos": _numbers(transform["translation"]),
-            "euler": _numbers([math.radians(value) for value in transform["rotation_euler_degrees"]]),
-        },
-    )
+    body_attributes = {
+        "name": runtime_name,
+        "pos": _numbers(transform["translation"]),
+        "euler": _numbers([math.radians(value) for value in transform["rotation_euler_degrees"]]),
+    }
+    if runtime_name == "place_target":
+        body_attributes["mocap"] = "true"
+    body = ET.SubElement(worldbody, "body", body_attributes)
     if physics["dynamic"]:
         joint_name = "pick_cube_free" if runtime_name == "pick_cube" else f"{runtime_name}_free"
         ET.SubElement(body, "freejoint", {"name": joint_name})
@@ -799,7 +798,7 @@ def _append_composition_primitive(
             "friction": _numbers(physics["friction"]),
             "contype": "0" if collision_mode == "visual_only" else "1",
             "conaffinity": "0" if collision_mode == "visual_only" else "1",
-            "group": "2" if collision_mode == "visual_only" else "3",
+            "group": "2" if collision_mode == "visual_only" else "0",
             "rgba": _numbers(rgba),
             **_primitive_geom(primitive, scaled_dimensions),
         }
@@ -886,7 +885,7 @@ def _append_composition_mesh(
         "friction": _numbers(physics["friction"]),
         "contype": "0" if physics["collision_mode"] == "visual_only" else "1",
         "conaffinity": "0" if physics["collision_mode"] == "visual_only" else "1",
-        "group": "2" if physics["collision_mode"] == "visual_only" else "3",
+        "group": "2" if physics["collision_mode"] == "visual_only" else "0",
         "rgba": _numbers(physics["rgba"]),
     }
     if physics["dynamic"]:
@@ -916,7 +915,7 @@ def _ensure_overview_camera(root: ET.Element, *, target: str) -> None:
         worldbody = ET.SubElement(root, "worldbody")
     existing = worldbody.find("./camera[@name='overview']")
     if existing is None:
-        ET.SubElement(worldbody, "camera", {"name": "overview", "mode": "targetbody", "target": target, "pos": "2 -2 1.8", "fovy": "55"})
+        ET.SubElement(worldbody, "camera", {"name": "overview", "mode": "targetbody", "target": target, "pos": "1.65 -1.25 1.15", "fovy": "50"})
 
 
 def _write_home_keyframe(runtime_scene: Path) -> None:

@@ -214,11 +214,26 @@ def _simulator_probe() -> dict[str, Any]:
         scene_path = Path(temporary) / "scene.xml"
         scene_path.write_text(xml, encoding="utf-8")
         from motrixsim import SceneData, load_model, step
+        from motrixsim.render import RenderApp
 
         motrix_model = load_model(str(scene_path))
         motrix_data = SceneData(motrix_model)
-        for _ in range(8):
-            step(motrix_model, motrix_data)
+        motrix_model.cameras[0].set_render_target("image", 160, 120)
+        with RenderApp(headless=True) as motrix_renderer:
+            motrix_renderer.launch(motrix_model)
+            for _ in range(8):
+                step(motrix_model, motrix_data)
+            capture = motrix_renderer.get_camera(0).capture()
+            motrix_renderer.sync(motrix_data, wait=True)
+            motrix_image = capture.take_image()
+            if motrix_image is None:
+                raise RuntimeError("MotrixSim headless renderer did not return an image")
+            motrix_pixels = np.asarray(motrix_image.pixels, dtype=np.uint8)[:, :, :3]
+        motrix_mean = float(motrix_pixels.mean())
+        motrix_std = float(motrix_pixels.std())
+        motrix_nonzero = int(np.count_nonzero(motrix_pixels))
+        if motrix_nonzero <= 0 or motrix_std <= 0:
+            raise RuntimeError(f"MotrixSim headless renderer produced a blank image: mean={motrix_mean}, std={motrix_std}")
         ffmpeg = os.environ.get("REAL2SIM_FFMPEG_BIN", "").strip() or shutil.which("ffmpeg")
         if not ffmpeg:
             raise RuntimeError("ffmpeg executable is unavailable")
@@ -258,7 +273,8 @@ def _simulator_probe() -> dict[str, Any]:
         "ok": True,
         "mujoco_time": float(data.time),
         "motrix_timestep": float(motrix_model.options.timestep),
-        "renderer": {"shape": list(image.shape), "mean": image_mean, "std": image_std, "nonzero_pixels": nonzero_pixels},
+        "mujoco_renderer": {"shape": list(image.shape), "mean": image_mean, "std": image_std, "nonzero_pixels": nonzero_pixels},
+        "motrixsim_renderer": {"shape": list(motrix_pixels.shape), "mean": motrix_mean, "std": motrix_std, "nonzero_pixels": motrix_nonzero},
         "ffmpeg": {"path": ffmpeg, "video_size": video_size, "codec": "libx264"},
     }
 

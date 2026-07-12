@@ -251,10 +251,7 @@ def test_scene_composition_catalog_and_payload_are_registered(tmp_path: Path) ->
         assert queued.json()["task"]["type"] == "scene_composition"
 
 
-@pytest.mark.integration
-def test_real_rm65_scene_composition_loads_and_steps_in_both_runtimes(tmp_path: Path) -> None:
-    mujoco = pytest.importorskip("mujoco")
-    pytest.importorskip("motrixsim")
+def _build_real_rm65_composition_package(package: Path) -> tuple[Path, dict]:
     candidates = [
         Path("/opt/motrixsim-docs/examples/assets/rm65_open_cabinet/mjx_rm65.xml"),
         Path("/Users/d-robotics/workSpace/motrixsim-docs/examples/assets/rm65_open_cabinet/mjx_rm65.xml"),
@@ -262,7 +259,6 @@ def test_real_rm65_scene_composition_loads_and_steps_in_both_runtimes(tmp_path: 
     robot_source = next((path for path in candidates if path.is_file()), None)
     if robot_source is None:
         pytest.skip("real MotrixSim RM65 asset checkout is unavailable")
-    package = tmp_path / "composition"
     runtime = package / "simulator_assets" / "scene.xml"
     (package / "assets" / "meshes").mkdir(parents=True)
     runtime.parent.mkdir(parents=True)
@@ -289,6 +285,14 @@ def test_real_rm65_scene_composition_loads_and_steps_in_both_runtimes(tmp_path: 
         source_paths={},
         validation_steps=120,
     )
+    return runtime, result
+
+
+@pytest.mark.integration
+def test_real_rm65_scene_composition_loads_and_steps_in_both_runtimes(tmp_path: Path) -> None:
+    mujoco = pytest.importorskip("mujoco")
+    motrixsim = pytest.importorskip("motrixsim")
+    runtime, result = _build_real_rm65_composition_package(tmp_path / "composition")
     assert result["validation"]["mujoco"]["status"] == "loaded_and_stepped"
     assert result["validation"]["motrixsim"]["status"] == "loaded_and_stepped"
     assert result["collection_ready"] is True
@@ -303,6 +307,8 @@ def test_real_rm65_scene_composition_loads_and_steps_in_both_runtimes(tmp_path: 
         (mujoco.mjtObj.mjOBJ_CAMERA, "overview"),
     ):
         assert mujoco.mj_name2id(model, object_type, name) >= 0
+    motrix_model = motrixsim.load_model(str(runtime))
+    assert motrix_model.get_body("place_target").mocap is not None
     assert Path(result["composition"]["robot"]["path"]).stat().st_size > 1_000_000
 
 
@@ -795,10 +801,10 @@ def test_motrixsim_runtime_scene_uses_current_python_when_module_is_installed(mo
 
 @pytest.mark.integration
 def test_real_rm65_physical_collection_writes_act_hdf5(tmp_path: Path) -> None:
-    scene = ROOT / "workspace/motrixsim_assets/parlour_rm65_pick_place/simulator_assets/rm65_table_pick_place.xml"
-    if not scene.is_file():
-        pytest.skip("real imported RM65 scene asset is not present")
+    pytest.importorskip("motrixsim")
+    scene, _ = _build_real_rm65_composition_package(tmp_path / "composition")
     manifest = collect(scene, tmp_path / "collection", required_successes=1, max_attempts=2, max_steps=240, seed=7, width=160, height=120)
+    assert manifest["runtime"] == "motrixsim"
     assert manifest["successful_episodes"] == 1
     assert manifest["episodes"][0]["lift_height"] >= 0.10
     assert manifest["episodes"][0]["place_error"] <= 0.05

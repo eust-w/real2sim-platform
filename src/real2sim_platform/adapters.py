@@ -3062,6 +3062,9 @@ def _validate_motrixsim_asset(candidates: list[Path], *, level: str) -> dict[str
         data = SceneData(model)
         for _ in range(8):
             step(model, data)
+        if not descriptor["ok"]:
+            descriptor = _validate_sim_asset([runtime_scene], required_suffix=".xml")
+            descriptor.update({"artifact_kind": "mjcf", "role": "motrixsim_runtime_input"})
         return {
             "ok": True,
             "path": str(runtime_scene),

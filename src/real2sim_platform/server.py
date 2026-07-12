@@ -1548,7 +1548,7 @@ def _capabilities(cfg: PlatformConfig, storage: BosStorage, store: PlatformStore
         "mujoco": mujoco_ready,
         "motrixsim": motrixsim_ready,
         "discoverse_act": cfg.discoverse_root.is_dir() and act_root.is_dir() and discoverse_commit == cfg.discoverse_commit and act_commit == cfg.act_commit and torch_ready,
-        "rm65_controller": rm65_controller.is_file() and mujoco_ready,
+        "rm65_controller": rm65_controller.is_file() and motrixsim_ready,
     }
     worker_status: dict[str, Any] = {"connected": cfg.worker_mode != "api", "age_seconds": 0 if cfg.worker_mode != "api" else None}
     if store is not None and cfg.worker_mode == "api":
@@ -1566,7 +1566,7 @@ def _capabilities(cfg: PlatformConfig, storage: BosStorage, store: PlatformStore
                 mujoco=bool(checks.get("mujoco_python")),
                 motrixsim=bool(checks.get("motrixsim_python")),
                 discoverse_act=all(bool(checks.get(name)) for name in ("discoverse_act", "torch_cuda", "act_import")),
-                rm65_controller=bool(checks.get("rm65_controller")) and bool(checks.get("mujoco_python")),
+                rm65_controller=bool(checks.get("rm65_controller")) and bool(checks.get("motrixsim_python")),
             )
         else:
             for name in local_runtime:
