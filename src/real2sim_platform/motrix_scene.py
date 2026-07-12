@@ -574,14 +574,17 @@ def _primitive_geom(primitive: str, dimensions: list[float]) -> dict[str, str]:
 
 
 def _runtime_scene_from_manifest(package_dir: Path, manifest: dict[str, Any]) -> Path:
-    motrix = (manifest.get("simulator_artifacts") or {}).get("motrixsim") or {}
-    candidate = Path(str(motrix.get("runtime_scene") or ""))
-    if candidate.is_file():
-        return candidate
     for relative in ("simulator_assets/scene.xml", "scene.xml", "scene_mujoco.xml"):
         path = package_dir / relative
         if path.is_file():
             return path
+    motrix = (manifest.get("simulator_artifacts") or {}).get("motrixsim") or {}
+    candidate = Path(str(motrix.get("runtime_scene") or ""))
+    package_root = package_dir.resolve()
+    if candidate.is_file():
+        resolved = candidate.resolve()
+        if resolved == package_root or package_root in resolved.parents:
+            return resolved
     return package_dir / "simulator_assets" / "scene.xml"
 
 

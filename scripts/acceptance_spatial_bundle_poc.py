@@ -127,6 +127,11 @@ def add_asset_revision(
         run.check(f"{name} 在 MotrixSim 中具有真实自由关节", int((runtime.get("motrixsim") or {}).get("nq") or 0) >= 7, runtime)
     revision_id = str(result.get("scene_id") or "")
     run.check(f"{name} 生成独立场景版本", bool(revision_id) and revision_id != scene_id, result)
+    run.check(
+        f"{name} 使用修订包内独立运行时文件",
+        "/scene_asset_compose/" in str(result.get("scene_path") or ""),
+        result.get("scene_path"),
+    )
     manifest = run.client.get(f"/api/scenes/{revision_id}/manifest")
     added = [item for item in manifest.get("assets", []) if item.get("role") == "added_asset"]
     run.check(f"{name} 已写入场景清单", any(item.get("name") == name for item in added), added)
@@ -232,6 +237,12 @@ def run_acceptance(args: argparse.Namespace) -> int:
                 if item.get("role") == "added_asset"
             }
             run.check("连续场景修订保留全部数字资产", {"动态抓取方块", "静态放置目标"}.issubset(added_names), sorted(added_names))
+            parent_after = run.client.get(f"/api/scenes/{imported['scene_id']}/manifest")
+            parent_added = [item.get("name") for item in parent_after.get("assets", []) if item.get("role") == "added_asset"]
+            first_after = run.client.get(f"/api/scenes/{cube['scene_id']}/manifest")
+            first_added = [item.get("name") for item in first_after.get("assets", []) if item.get("role") == "added_asset"]
+            run.check("父场景未被资产修订污染", not parent_added, parent_added)
+            run.check("第一版修订只包含首个新增资产", first_added == ["动态抓取方块"], first_added)
             run.report["browser"]["target_scene_id"] = marker["scene_id"]
             run.report["browser"]["viewer_url"] = f"/static/scene-viewer.html?scene_id={marker['scene_id']}"
         return finalize(run)

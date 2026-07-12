@@ -12,7 +12,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from real2sim_platform.config import PlatformConfig
-from real2sim_platform.adapters import _act_task_config_source, _inspect_act_dataset, index_artifacts_for_task
+from real2sim_platform.adapters import (
+    _act_task_config_source,
+    _copy_tree_isolated,
+    _inspect_act_dataset,
+    _rebase_package_metadata,
+    index_artifacts_for_task,
+)
 from real2sim_platform.motrix_scene import (
     compose_scene_asset,
     convert_asset_to_obj,
@@ -165,6 +171,39 @@ def test_primitive_asset_scale_is_applied_to_runtime_geometry(
     geom = bodies[-1].find("geom")
     assert geom is not None
     assert [float(value) for value in geom.attrib["size"].split()] == pytest.approx([1.0, 3.0, 6.0])
+
+
+def test_scene_revision_copy_is_isolated_and_rebases_package_paths(tmp_path: Path) -> None:
+    source = tmp_path / "source-package"
+    runtime = source / "simulator_assets" / "scene.xml"
+    viewer = source / "viewer" / "environment.glb"
+    runtime.parent.mkdir(parents=True)
+    viewer.parent.mkdir(parents=True)
+    runtime.write_text("<mujoco><worldbody/></mujoco>\n", encoding="utf-8")
+    viewer.write_bytes(b"real-viewer-asset")
+    manifest = {
+        "assets": [{"path": str(viewer)}],
+        "simulator_artifacts": {"motrixsim": {"runtime_scene": str(runtime)}},
+    }
+    (source / "scene_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (source / "motrix_import.json").write_text(
+        json.dumps({"runtime_scene": str(runtime), "layers": {"visual": str(viewer)}}),
+        encoding="utf-8",
+    )
+    source_runtime_before = runtime.read_bytes()
+    source_manifest_before = (source / "scene_manifest.json").read_bytes()
+
+    revision = tmp_path / "revision-package"
+    _copy_tree_isolated(source, revision)
+    _rebase_package_metadata(revision, source)
+    revision_manifest = json.loads((revision / "scene_manifest.json").read_text(encoding="utf-8"))
+    assert revision_manifest["assets"][0]["path"] == str(revision / "viewer" / "environment.glb")
+    assert revision_manifest["simulator_artifacts"]["motrixsim"]["runtime_scene"] == str(revision / "simulator_assets" / "scene.xml")
+
+    (revision / "simulator_assets" / "scene.xml").write_text("<mujoco model='revision'/>\n", encoding="utf-8")
+    (revision / "scene_manifest.json").write_text("{}\n", encoding="utf-8")
+    assert runtime.read_bytes() == source_runtime_before
+    assert (source / "scene_manifest.json").read_bytes() == source_manifest_before
 
 
 def test_ascii_3dgs_spz_exporter_uses_real_spark_writer(tmp_path: Path) -> None:

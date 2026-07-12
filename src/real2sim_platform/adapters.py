@@ -814,7 +814,8 @@ def run_scene_asset_compose(config: PlatformConfig, store: PlatformStore, task: 
     run_dir = Path(task["run_dir"])
     revision_dir = run_dir / "scene_revision"
     _task_progress(store, task, 18, "创建场景版本", "正在复制父场景并保留原版本不变")
-    _copy_tree_hardlink(source_package, revision_dir)
+    _copy_tree_isolated(source_package, revision_dir)
+    _rebase_package_metadata(revision_dir, source_package)
     source_path = _resolve_asset_source(config, store, params.get("source") or {}, params.get("path"))
     asset_spec = {
         "name": params.get("name"),
@@ -2987,15 +2988,28 @@ def _find_scene_json(package_dir: Path) -> Path | None:
     return matches[0] if matches else None
 
 
-def _copy_tree_hardlink(source: Path, target: Path) -> None:
-    def link_or_copy(src: str, dst: str) -> str:
-        try:
-            os.link(src, dst)
-            return dst
-        except OSError:
-            return shutil.copy2(src, dst)
+def _copy_tree_isolated(source: Path, target: Path) -> None:
+    shutil.copytree(source, target, copy_function=shutil.copy2)
 
-    shutil.copytree(source, target, copy_function=link_or_copy)
+
+def _rebase_package_metadata(package_dir: Path, source_package: Path) -> None:
+    old_root = str(source_package.resolve())
+    new_root = str(package_dir.resolve())
+
+    def rebase(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: rebase(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rebase(item) for item in value]
+        if isinstance(value, str) and (value == old_root or value.startswith(old_root + os.sep)):
+            return new_root + value[len(old_root) :]
+        return value
+
+    for metadata_path in (package_dir / "scene_manifest.json", package_dir / "motrix_import.json"):
+        if not metadata_path.is_file():
+            continue
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata_path.write_text(json.dumps(rebase(payload), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _resolve_asset_source(config: PlatformConfig, store: PlatformStore, source: dict[str, Any], legacy_path: Any) -> Path | None:
