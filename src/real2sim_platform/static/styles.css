@@ -220,6 +220,11 @@ body.viewer-maximized { overflow: hidden; }
 .asset-grid, .model-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding-top: 11px; }
 .asset-card, .model-card { min-width: 0; min-height: 128px; display: grid; align-content: end; gap: 6px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 5px; background: var(--surface-3); }
 .asset-card span, .model-card > span, .model-card p { margin: 0; color: var(--muted); font-size: 10px; }
+.asset-source-actions { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--line-soft); border-radius: 5px; background: var(--surface-3); }
+.asset-source-actions span { min-width: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.asset-source-actions button { flex: 0 0 auto; }
+.toggle-field { min-height: 42px; display: flex !important; grid-template-columns: auto 1fr !important; align-items: center; justify-content: start; gap: 8px !important; padding: 0 2px; }
+.toggle-field input { width: 16px; height: 16px; margin: 0; }
 .model-card { min-height: 160px; align-content: start; }
 .sparkline { height: 34px; display: flex; align-items: end; border-bottom: 1px solid var(--line-soft); }
 .sparkline i { height: 5px; border-radius: 4px; background: var(--accent); }

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Real2Sim</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/styles.css?v=20260711-poc-product-v3">
+  <link rel="stylesheet" href="/static/styles.css?v=20260712-motrix-spatial-v1">
 </head>
 <body>
   <section id="authShell" class="auth-shell" aria-label="登录 Real2Sim">
@@ -141,8 +141,8 @@
             <span>xarm7、3DGS fixture 和公开数据集</span>
           </button>
           <button class="source-card" data-open-import="upload">
-            <strong>上传文件</strong>
-            <span>zip、视频或图片包</span>
+            <strong>上传文件或空间包</strong>
+            <span>视频、图片、USDZ + SPZ、网格资产</span>
           </button>
           <button class="source-card" data-open-import="bos">
             <strong>BOS 存储</strong>
@@ -345,26 +345,32 @@
           <section class="panel asset-editor-panel">
             <div class="panel-head">
               <div>
-                <h2>场景增强</h2>
-                <p>从当前场景包选择资产，或在高级入口导入白名单文件</p>
+                <h2>数字资产编辑</h2>
+                <p>从资产库选择物体或基础形状，保存后生成通过仿真校验的新版本</p>
               </div>
-              <button id="addSceneAsset" class="primary-button">添加资产</button>
+              <button id="addSceneAsset" class="primary-button">保存为新版本</button>
             </div>
             <div class="form-grid">
               <label class="span-2">目标场景<select id="assetScene"></select></label>
-              <label class="span-2">资产来源<select id="assetPreset"></select></label>
-              <details class="span-2 option-group">
-                <summary>高级：从白名单路径添加新资产</summary>
-                <label>资产文件<input id="assetPath" placeholder="仅支持配置白名单内文件"></label>
-              </details>
-              <label>显示名称<input id="assetName" placeholder="例如柜体碰撞模型"></label>
-              <label>资产类型<select id="assetKind"><option value="auto">自动识别</option><option value="mesh">网格 / 物体</option><option value="splat_or_pointcloud">点云 / Splat</option><option value="texture">纹理</option><option value="simulator">仿真文件</option><option value="metadata">配置 / 元数据</option></select></label>
-              <label>用途<select id="assetRole"><option value="added_asset">新增资产</option><option value="collision">碰撞体</option><option value="visual">可视化模型</option><option value="texture">纹理贴图</option><option value="simulator_import">仿真导入</option></select></label>
-              <label>尺度<input id="assetScale" type="number" min="0.001" step="0.001" value="1"></label>
+              <label class="span-2">数字资产<select id="assetPreset"></select></label>
+              <div class="span-2 asset-source-actions"><span id="assetSourceHint">基础形状可直接加入，上传的网格会自动出现在资产库</span><button type="button" data-open-import="upload">上传新资产</button></div>
+              <label>显示名称<input id="assetName" placeholder="例如茶几上的收纳盒"></label>
+              <label>碰撞模式<select id="assetCollisionMode"><option value="visual_and_collision">可见并参与碰撞</option><option value="visual_only">仅可见</option><option value="collision_only">仅碰撞</option></select></label>
+              <label class="toggle-field"><input id="assetDynamic" type="checkbox"> 可运动物体</label>
+              <label>质量（kg）<input id="assetMass" type="number" min="0.001" step="0.01" value="0.25"></label>
+              <label>长度（m）<input id="assetSizeX" type="number" min="0.001" step="0.01" value="0.10"></label>
+              <label>宽度（m）<input id="assetSizeY" type="number" min="0.001" step="0.01" value="0.10"></label>
+              <label>高度（m）<input id="assetSizeZ" type="number" min="0.001" step="0.01" value="0.10"></label>
+              <label>缩放 X<input id="assetScaleX" type="number" min="0.001" step="0.01" value="1"></label>
+              <label>缩放 Y<input id="assetScaleY" type="number" min="0.001" step="0.01" value="1"></label>
+              <label>缩放 Z<input id="assetScaleZ" type="number" min="0.001" step="0.01" value="1"></label>
               <label>位置 X<input id="assetPosX" type="number" step="0.01" value="0"></label>
               <label>位置 Y<input id="assetPosY" type="number" step="0.01" value="0"></label>
               <label>位置 Z<input id="assetPosZ" type="number" step="0.01" value="0"></label>
-              <label>朝向 Yaw<input id="assetYaw" type="number" step="1" value="0"></label>
+              <label>旋转 X（度）<input id="assetRotX" type="number" step="1" value="0"></label>
+              <label>旋转 Y（度）<input id="assetRotY" type="number" step="1" value="0"></label>
+              <label>旋转 Z（度）<input id="assetRotZ" type="number" step="1" value="0"></label>
+              <label>仿真校验步数<input id="assetValidationSteps" type="number" min="1" max="5000" value="60"></label>
             </div>
           </section>
         </div>

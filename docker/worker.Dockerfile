@@ -96,7 +96,7 @@ COPY scripts ./scripts
 COPY vendor/gs_playground /opt/gs_playground
 RUN python -m pip install --no-cache-dir --no-deps .
 
-RUN python -c 'import mujoco, motrixsim, torch; from huggingface_hub import snapshot_download; assert torch.__version__.startswith("2.2")' && \
+RUN python -c 'import mujoco, motrixsim, torch, trimesh; from pxr import Usd, UsdGeom; from huggingface_hub import snapshot_download; assert torch.__version__.startswith("2.2"); assert Usd is not None and UsdGeom is not None and trimesh is not None' && \
     test "$(node --version)" = "v20.19.2" && \
     PYTHONPATH=/opt/DISCOVERSE/policies/act:/opt/DISCOVERSE python -c 'from policies.act.act import ACTPolicy; assert ACTPolicy is not None' && \
     PYTHONPATH=/opt/real2sim_paper_runtime/AnySplat python -c 'from src.model.model.anysplat import AnySplat; assert AnySplat is not None' && \

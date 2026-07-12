@@ -193,37 +193,38 @@ def test_dataset_scene_model_bulk_interfaces(tmp_path: Path) -> None:
     assert model.json()["type"] == "training"
 
 
-def test_scene_asset_append_updates_manifest_and_artifact(tmp_path: Path) -> None:
+def test_scene_asset_request_queues_real_revision_task_from_catalog(tmp_path: Path) -> None:
     package = tmp_path / "scene_package"
     package.mkdir()
     scene_file = package / "scene.json"
     scene_file.write_text('{"schema":"motrixsim.scene.v1"}\n', encoding="utf-8")
-    asset = package / "added_asset.json"
-    asset.write_text('{"name":"fixture asset"}\n', encoding="utf-8")
+    asset_dataset = tmp_path / "asset_dataset"
+    asset_dataset.mkdir()
+    asset = asset_dataset / "fixture.obj"
+    asset.write_text("v 0 0 0\nv 0.1 0 0\nv 0 0.1 0\nf 1 2 3\n", encoding="utf-8")
     cfg = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace", allowed_path_roots=(tmp_path,))
     client = TestClient(create_app(cfg))
+    dataset = client.post("/api/datasets/import-path", json={"path": str(asset_dataset), "name": "asset library"}).json()
     scene = client.post("/api/scenes/import", json={"path": str(scene_file), "name": "editable scene"}).json()
+    catalog = client.get("/api/assets").json()
+    catalog_asset = next(item for item in catalog if item.get("relative_path") == "fixture.obj")
+    assert catalog_asset["source"]["dataset_id"] == dataset["id"]
     response = client.post(
         f"/api/scenes/{scene['id']}/assets",
         json={
-            "path": str(asset),
-            "name": "fixture metadata",
-            "role": "simulator_import",
-            "transform": {"translation": [1, 2, 3], "scale": 1.5},
+            "source": catalog_asset["source"],
+            "name": "fixture mesh",
+            "transform": {"translation": [1, 2, 3], "scale": [1.5, 1.5, 1.5]},
+            "physics": {"dynamic": True, "mass": 0.2, "collision_mode": "visual_and_collision"},
         },
     )
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["asset"]["name"] == "fixture metadata"
-    assert payload["scene"]["id"] != scene["id"]
-    assert payload["parent_scene_id"] == scene["id"]
-    manifest = client.get(f"/api/scenes/{payload['scene']['id']}/manifest").json()
-    added = [item for item in manifest["assets"] if item["name"] == "fixture metadata"]
-    assert added
-    assert added[0]["role"] == "simulator_import"
-    assert added[0]["transform"]["translation"] == [1, 2, 3]
-    assert manifest["revision"]["parent_scene_id"] == scene["id"]
-    assert client.get(added[0]["url"]).status_code == 200
+    assert payload["scene_id"] == scene["id"]
+    assert payload["task"]["type"] == "scene_asset_compose"
+    assert payload["task"]["params"]["source"] == catalog_asset["source"]
+    assert payload["task"]["params"]["physics"]["dynamic"] is True
+    assert len(client.get("/api/scenes").json()) == 1
 
 
 def test_scene_runtime_metadata_update(tmp_path: Path) -> None:

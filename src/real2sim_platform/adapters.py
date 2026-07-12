@@ -16,7 +16,8 @@ from typing import Any, Callable
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
-from .config import PlatformConfig
+from .config import PlatformConfig, is_path_allowed
+from .motrix_scene import build_spatial_scene_package, compose_scene_asset
 from .source_revision import read_source_revision
 from .storage import ALLOWED_AREAS, BosStorage, normalize_relative_path
 from .store import PlatformStore
@@ -25,7 +26,7 @@ from .store import PlatformStore
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".ppm"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v"}
 PARQUET_SUFFIXES = {".parquet"}
-SCENE_ASSET_SUFFIXES = {".ply", ".splat", ".spz", ".ksplat", ".sog", ".zip", ".rad", ".obj", ".glb", ".gltf", ".xml", ".json", ".png", ".jpg", ".jpeg"}
+SCENE_ASSET_SUFFIXES = {".ply", ".splat", ".spz", ".ksplat", ".sog", ".zip", ".rad", ".obj", ".stl", ".glb", ".gltf", ".usd", ".usda", ".usdc", ".usdz", ".xml", ".json", ".png", ".jpg", ".jpeg"}
 SPARK_ASSET_SUFFIXES = {".ply", ".splat", ".spz", ".ksplat", ".sog", ".zip", ".rad"}
 SPARK_VENDOR_PATH = Path(__file__).parent / "static" / "vendor" / "spark.module.min.js"
 THREE_VENDOR_PATH = Path(__file__).parent / "static" / "vendor" / "three" / "three.module.js"
@@ -50,14 +51,27 @@ def scan_dataset(path: Path) -> dict[str, Any]:
     videos = [p for p in files if p.suffix.lower() in VIDEO_SUFFIXES]
     parquets = [p for p in files if p.suffix.lower() in PARQUET_SUFFIXES]
     metadata = [p for p in files if p.name in {"metadata.json", "transforms.json", "calibration.json"} or p.suffix.lower() == ".jsonl"]
+    scene_assets = [p for p in files if p.suffix.lower() in SCENE_ASSET_SUFFIXES]
+    usdz_files = [p for p in files if p.suffix.lower() == ".usdz"]
+    splat_files = [p for p in files if p.suffix.lower() in {".spz", ".splat", ".ksplat", ".sog"}]
+    spatial_bundle = bool(
+        any("collider" in p.stem.lower() for p in usdz_files)
+        and any("shaded" in p.stem.lower() or "scene" in p.stem.lower() for p in usdz_files)
+        and splat_files
+    )
     prepared_manifest = root / "prepared_manifest.json" if root.is_dir() else None
-    input_kind = "prepared_frames" if prepared_manifest and prepared_manifest.is_file() else "video" if videos or root.suffix.lower() in VIDEO_SUFFIXES else "parquet_video" if parquets else "rgbd" if depths else "images"
+    input_kind = "motrixsim_spatial_bundle" if spatial_bundle else "prepared_frames" if prepared_manifest and prepared_manifest.is_file() else "video" if videos or root.suffix.lower() in VIDEO_SUFFIXES else "parquet_video" if parquets else "rgbd" if depths else "images"
     return {
         "path": str(root),
         "image_count": len(images),
         "depth_count": len(depths),
         "video_count": len(videos),
         "parquet_count": len(parquets),
+        "scene_asset_count": len(scene_assets),
+        "usdz_count": len(usdz_files),
+        "splat_count": len(splat_files),
+        "spatial_bundle_ready": spatial_bundle,
+        "scene_asset_files": [str(p.relative_to(root)) if root.is_dir() else p.name for p in scene_assets[:100]],
         "metadata_files": [str(p.relative_to(root)) if root.is_dir() else p.name for p in metadata[:20]],
         "prepared_manifest": str(prepared_manifest) if prepared_manifest and prepared_manifest.is_file() else "",
         "input_kind": input_kind,
@@ -79,6 +93,7 @@ def run_doctor(config: PlatformConfig) -> dict[str, Any]:
             "anysplat_pinned",
             "mujoco_python",
             "motrixsim_python",
+            "usd_scene_import",
             "nvidia_smi",
         ]
         if config.production_mode
@@ -111,6 +126,7 @@ def run_doctor(config: PlatformConfig) -> dict[str, Any]:
         "act_import": _act_runtime_import_ready(str(config.discoverse_root), config.discoverse_commit, config.act_commit),
         "anysplat_pinned": _git_head(config.anysplat_root) == config.anysplat_commit and config.anysplat_python.exists(),
         "motrixsim_python": _module_available("motrixsim"),
+        "usd_scene_import": all(_module_available(name) for name in ["pxr", "trimesh", "numpy"]),
     }
     return {
         "ok": all(bool(checks[name]) for name in core_checks),
@@ -174,6 +190,10 @@ def execute_task(config: PlatformConfig, store: PlatformStore, task: dict[str, A
         return run_bos_import(config, store, task, emit)
     if task_type == "motrixsim_asset_import":
         return run_motrixsim_asset_import(config, store, task, emit)
+    if task_type == "motrixsim_scene_import":
+        return run_motrixsim_scene_import(config, store, task, emit)
+    if task_type == "scene_asset_compose":
+        return run_scene_asset_compose(config, store, task, emit)
     if task_type == "simulator_validation":
         return run_simulator_validation(config, store, task, emit)
     if task_type == "expert_collection":
@@ -722,6 +742,141 @@ def run_motrixsim_asset_import(config: PlatformConfig, store: PlatformStore, tas
         "package_dir": str(package_dir),
         "preview_path": str(preview_path),
         "runtime_validation": runtime_validation,
+    }
+
+
+def run_motrixsim_scene_import(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
+    params = task["params"]
+    dataset = store.get_dataset(str(params["dataset_id"]))
+    input_root = Path(dataset["path"])
+    run_dir = Path(task["run_dir"])
+    package_dir = run_dir / "scene_package"
+    scene_name = str(params.get("scene_name") or f"{dataset['name']} · MotrixSim 场景")
+    validation_steps = int(params.get("validation_steps", 120))
+
+    _task_progress(store, task, 15, "识别空间包", "正在校验 USDZ 碰撞层、视觉层与 3DGS 外观层")
+    result = build_spatial_scene_package(
+        input_root,
+        package_dir,
+        scene_name=scene_name,
+        validation_steps=validation_steps,
+        emit=emit,
+    )
+    _task_progress(store, task, 84, "登记场景", "MotrixSim 已真实加载并步进，正在登记场景资产与清单")
+    artifacts = _index_artifacts(store, task["id"], package_dir)
+    manifest_path = Path(result["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _attach_artifact_urls(manifest, artifacts)
+    manifest_path.write_text(json.dumps(enrich_scene_manifest_assets(manifest), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    report = result["report"]
+    validation = report["runtime_validation"]
+    scene = store.create_scene(
+        name=scene_name,
+        path=Path(result["runtime_scene"]),
+        metadata={
+            "package": str(package_dir),
+            "renderer": "spark",
+            "simulators": ["mujoco", "motrixsim"],
+            "runtime_validation": {"mujoco": bool(validation["mujoco"]["ok"]), "motrixsim": bool(validation["motrixsim"]["ok"])},
+            "source_dataset_id": dataset["id"],
+            "editable": True,
+        },
+        source_type="motrixsim_spatial_bundle",
+        source_uri=dataset.get("storage_uri") or dataset.get("source_uri") or str(input_root),
+        version=str(dataset.get("version") or dataset.get("checksum") or "v1")[:24],
+        parent_task_id=task["id"],
+        manifest_path=manifest_path,
+        metrics=manifest.get("metrics") or {},
+        tags=["motrixsim", "spatial-bundle", "usdz", "3dgs", "runtime-validated", "editable"],
+        cache_state="local",
+    )
+    _task_progress(store, task, 94, "场景可用", "空间包已成为可预览、可添加数字资产的 MotrixSim 场景")
+    return {
+        "scene_id": scene["id"],
+        "scene_path": scene["path"],
+        "manifest_path": str(manifest_path),
+        "package_dir": str(package_dir),
+        "runtime_validation": validation,
+        "source_dataset_id": dataset["id"],
+    }
+
+
+def run_scene_asset_compose(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
+    params = task["params"]
+    parent = store.get_scene(str(params["scene_id"]))
+    source_package = Path(str((parent.get("metadata") or {}).get("package") or ""))
+    if not source_package.is_dir():
+        scene_path = Path(parent["path"])
+        source_package = scene_path if scene_path.is_dir() else scene_path.parent
+    if not (source_package / "scene_manifest.json").is_file():
+        raise ValueError("selected scene is not an editable MotrixSim scene package")
+
+    run_dir = Path(task["run_dir"])
+    revision_dir = run_dir / "scene_revision"
+    _task_progress(store, task, 18, "创建场景版本", "正在复制父场景并保留原版本不变")
+    _copy_tree_hardlink(source_package, revision_dir)
+    source_path = _resolve_asset_source(config, store, params.get("source") or {}, params.get("path"))
+    asset_spec = {
+        "name": params.get("name"),
+        "primitive": params.get("primitive"),
+        "transform": params.get("transform") or {},
+        "physics": params.get("physics") or {},
+    }
+    _task_progress(store, task, 38, "合成数字资产", "正在把资产写入 MotrixSim MJCF 和浏览器场景层")
+    composed = compose_scene_asset(
+        revision_dir,
+        asset_spec=asset_spec,
+        source_path=source_path,
+        validation_steps=int(params.get("validation_steps", 60)),
+        emit=emit,
+    )
+    _task_progress(store, task, 80, "登记修订产物", "双运行时校验通过，正在生成资产 URL、血缘和新场景版本")
+    artifacts = _index_artifacts(store, task["id"], revision_dir)
+    manifest_path = Path(composed["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    revision_id = uuid.uuid4().hex
+    manifest["revision"] = {
+        "id": revision_id,
+        "parent_scene_id": parent["id"],
+        "reason": "digital_asset_composed",
+        "task_id": task["id"],
+    }
+    _attach_artifact_urls(manifest, artifacts)
+    manifest_path.write_text(json.dumps(enrich_scene_manifest_assets(manifest), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    asset_name = str(composed["asset"].get("name") or "数字资产")
+    validation = composed["validation"]
+    metadata = dict(parent.get("metadata") or {})
+    metadata.update(
+        {
+            "package": str(revision_dir),
+            "parent_scene_id": parent["id"],
+            "revision_reason": "digital_asset_composed",
+            "runtime_validation": {"mujoco": bool(validation["mujoco"]["ok"]), "motrixsim": bool(validation["motrixsim"]["ok"])},
+            "editable": True,
+        }
+    )
+    scene = store.create_scene(
+        item_id=revision_id,
+        name=str(params.get("revision_name") or f"{parent['name']} · {asset_name}"),
+        path=Path(composed["runtime_scene"]),
+        metadata=metadata,
+        source_type="scene_revision",
+        source_uri=parent.get("storage_uri") or parent.get("source_uri") or parent["path"],
+        version=_next_scene_revision(str(parent.get("version") or "v1")),
+        parent_task_id=task["id"],
+        manifest_path=manifest_path,
+        metrics={**(parent.get("metrics") or {}), "added_asset_count": len([item for item in manifest.get("assets", []) if item.get("role") == "added_asset"])},
+        tags=list(dict.fromkeys([*(parent.get("tags") or []), "scene-revision", "digital-asset", "runtime-validated"])),
+        cache_state="local",
+    )
+    _task_progress(store, task, 94, "新版本可用", "数字资产已进入真实 MotrixSim 场景，新版本可预览和继续编辑")
+    return {
+        "scene_id": scene["id"],
+        "parent_scene_id": parent["id"],
+        "scene_path": scene["path"],
+        "manifest_path": str(manifest_path),
+        "asset": composed["asset"],
+        "runtime_validation": validation,
     }
 
 
@@ -2832,18 +2987,87 @@ def _find_scene_json(package_dir: Path) -> Path | None:
     return matches[0] if matches else None
 
 
-def _index_artifacts(store: PlatformStore, task_id: str, root: Path) -> None:
+def _copy_tree_hardlink(source: Path, target: Path) -> None:
+    def link_or_copy(src: str, dst: str) -> str:
+        try:
+            os.link(src, dst)
+            return dst
+        except OSError:
+            return shutil.copy2(src, dst)
+
+    shutil.copytree(source, target, copy_function=link_or_copy)
+
+
+def _resolve_asset_source(config: PlatformConfig, store: PlatformStore, source: dict[str, Any], legacy_path: Any) -> Path | None:
+    source_type = str(source.get("type") or "")
+    if source_type == "primitive" or (not source_type and not legacy_path):
+        return None
+    if source_type == "dataset":
+        dataset = store.get_dataset(str(source.get("dataset_id") or ""))
+        root = Path(dataset["path"]).resolve()
+        relative = Path(str(source.get("relative_path") or ""))
+        candidate = (root / relative).resolve()
+        if candidate != root and root not in candidate.parents:
+            raise ValueError("asset path escapes the selected dataset")
+    elif source_type == "scene":
+        scene = store.get_scene(str(source.get("scene_id") or ""))
+        manifest_path = Path(str(scene.get("manifest_path") or ""))
+        manifest = _read_optional_json(manifest_path)
+        key = str(source.get("asset_key") or source.get("relative_path") or "")
+        selected = next(
+            (
+                item
+                for item in manifest.get("assets", [])
+                if isinstance(item, dict) and key in {str(item.get("name") or ""), str(item.get("path") or "")}
+            ),
+            None,
+        )
+        if selected is None:
+            raise ValueError("selected scene asset no longer exists")
+        candidate = Path(str(selected.get("path") or "")).resolve()
+    else:
+        candidate = Path(str(legacy_path or source.get("path") or "")).expanduser().resolve()
+        if not is_path_allowed(candidate, config):
+            raise ValueError("asset path is outside configured import roots")
+    if not candidate.is_file():
+        raise FileNotFoundError(candidate)
+    return candidate
+
+
+def _attach_artifact_urls(manifest: dict[str, Any], artifacts: list[dict[str, Any]]) -> None:
+    by_path = {str(Path(item["path"]).resolve()): item for item in artifacts}
+    for asset in manifest.get("assets", []):
+        if not isinstance(asset, dict) or not asset.get("path"):
+            continue
+        artifact = by_path.get(str(Path(str(asset["path"])).resolve()))
+        if artifact:
+            asset["url"] = f"/api/artifacts/{artifact['id']}/content"
+
+
+def _next_scene_revision(current: str) -> str:
+    import re
+
+    match = re.search(r"(?:^|[-_.])r(\d+)$", current, re.IGNORECASE)
+    number = int(match.group(1)) + 1 if match else 2
+    base = re.sub(r"(?:[-_.])r\d+$", "", current, flags=re.IGNORECASE).strip("-_.") or "v1"
+    return f"{base}-r{number}"
+
+
+def _index_artifacts(store: PlatformStore, task_id: str, root: Path) -> list[dict[str, Any]]:
     indexable_suffixes = {
         ".json", ".jsonl", ".html", ".svg", ".png", ".jpg", ".jpeg", ".mp4", ".zip", ".tar", ".gz",
-        ".ply", ".spz", ".splat", ".ksplat", ".sog", ".rad", ".obj", ".glb", ".gltf", ".xml",
+        ".ply", ".spz", ".splat", ".ksplat", ".sog", ".rad", ".obj", ".stl", ".glb", ".gltf",
+        ".usd", ".usda", ".usdc", ".usdz", ".xml",
         ".hdf5", ".h5", ".ckpt", ".pkl", ".npy", ".npz", ".csv", ".yaml", ".yml", ".toml", ".py",
         ".log", ".txt",
     }
+    artifacts: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
         if path.suffix.lower() in indexable_suffixes:
-            store.add_artifact(task_id=task_id, name=path.name, path=path, kind=path.suffix.lower().lstrip(".") or "file")
+            artifacts.append(store.add_artifact(task_id=task_id, name=path.name, path=path, kind=path.suffix.lower().lstrip(".") or "file"))
+    return artifacts
 
 
 def index_artifacts_for_task(store: PlatformStore, task_id: str, root: Path) -> None:
@@ -2862,6 +3086,8 @@ def collect_task_reports(store: PlatformStore, task_id: str) -> dict[str, Any]:
         "reconstruction_report.json",
         "validation_report.json",
         "motrixsim_asset_import_report.json",
+        "motrixsim_scene_import_report.json",
+        "runtime_validation.json",
         "splat_optimization_report.json",
         "prepared_manifest.json",
         "dataset_manifest.json",
@@ -2876,7 +3102,7 @@ def collect_task_reports(store: PlatformStore, task_id: str) -> dict[str, Any]:
         if artifact_path.suffix.lower() == ".json" and artifact_path not in candidates:
             candidates.append(artifact_path)
     for path in candidates:
-        if path.name not in report_names:
+        if path.name not in report_names and not (path.name.startswith("asset_") and path.name.endswith("_validation.json")):
             continue
         payload = _read_optional_json(path)
         failure_summary = _report_failure_summary(path.name, payload)

@@ -13,6 +13,17 @@ from fastapi.testclient import TestClient
 
 from real2sim_platform.config import PlatformConfig
 from real2sim_platform.adapters import _act_task_config_source, _inspect_act_dataset, index_artifacts_for_task
+from real2sim_platform.motrix_scene import (
+    compose_scene_asset,
+    convert_asset_to_obj,
+    detect_spatial_bundle,
+    export_combined_obj,
+    export_glb,
+    load_usd_meshes,
+    safe_extract_zip,
+    validate_runtime_scene,
+    write_runtime_scene,
+)
 from real2sim_platform.rm65_controller import ACTION_ALIGNMENT, CONTROL_HOLD_STEPS, _write_preview_video, collect
 from real2sim_platform.runtime_gate import _motrixsim_assets_probe, _spz_exporter_probe, runtime_key
 from real2sim_platform.server import create_app
@@ -22,6 +33,138 @@ from real2sim_platform.store import PlatformStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_spatial_bundle_detection_and_safe_archive_boundary(tmp_path: Path) -> None:
+    import zipfile
+
+    bundle = tmp_path / "bundle"
+    (bundle / "combined_world" / "usdz").mkdir(parents=True)
+    (bundle / "gaussian_splatting").mkdir()
+    (bundle / "combined_world" / "usdz" / "environment_collider.usdz").write_bytes(b"collider")
+    (bundle / "combined_world" / "usdz" / "scene_shaded.usdz").write_bytes(b"visual")
+    (bundle / "gaussian_splatting" / "full_res.spz").write_bytes(b"spz")
+    detected = detect_spatial_bundle(bundle)
+    assert detected["ready"] is True
+    assert detected["layers"]["collision"]["sha256"]
+    archive_path = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("../outside.txt", "not allowed")
+    with zipfile.ZipFile(archive_path) as archive, pytest.raises(ValueError, match="unsafe archive path"):
+        safe_extract_zip(archive, tmp_path / "out")
+
+
+def test_real_usd_conversion_exports_motrixsim_mesh_and_mujoco_loads(tmp_path: Path) -> None:
+    pytest.importorskip("pxr")
+    pytest.importorskip("trimesh")
+    pytest.importorskip("mujoco")
+    usd = tmp_path / "fixture.usda"
+    usd.write_text(
+        '''#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def Xform "World" {
+    def Mesh "Floor" {
+        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0), (-1, -1, -0.1), (1, -1, -0.1), (1, 1, -0.1), (-1, 1, -0.1)]
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 2, 3, 7, 6, 5, 4, 0, 4, 5, 1, 1, 5, 6, 2, 2, 6, 7, 3, 3, 7, 4, 0]
+        uniform token subdivisionScheme = "none"
+    }
+}
+''',
+        encoding="utf-8",
+    )
+    meshes, metadata = load_usd_meshes(usd)
+    assert metadata["up_axis"] == "Z"
+    assert metadata["vertices"] == 8
+    assert metadata["triangles"] == 12
+    mesh_dir = tmp_path / "package" / "assets" / "meshes"
+    collision = mesh_dir / "environment_collision.obj"
+    visual = mesh_dir / "environment_visual.obj"
+    assert export_combined_obj(meshes, collision)["triangles"] == 12
+    assert export_combined_obj(meshes, visual)["vertices"] == 8
+    glb = tmp_path / "package" / "viewer" / "environment.glb"
+    assert export_glb(meshes, glb)["size_bytes"] > 0
+    runtime = tmp_path / "package" / "simulator_assets" / "scene.xml"
+    write_runtime_scene(runtime, scene_name="USD fixture", collision_obj=collision, visual_obj=visual)
+    report = validate_runtime_scene(runtime, steps=8)
+    assert report["mujoco"]["ok"] is True, report
+
+
+def test_glb_asset_conversion_bakes_scene_node_transforms(tmp_path: Path) -> None:
+    trimesh = pytest.importorskip("trimesh")
+    source = tmp_path / "translated.glb"
+    scene = trimesh.Scene()
+    scene.add_geometry(
+        trimesh.creation.box(extents=[1.0, 1.0, 1.0]),
+        node_name="translated_box",
+        transform=trimesh.transformations.translation_matrix([4.0, 2.0, 1.0]),
+    )
+    scene.export(source)
+    output = tmp_path / "translated.obj"
+    convert_asset_to_obj(source, output)
+    converted = trimesh.load(output, force="mesh", process=False)
+    assert converted.bounds[0].tolist() == pytest.approx([3.5, 1.5, 0.5])
+    assert converted.bounds[1].tolist() == pytest.approx([4.5, 2.5, 1.5])
+
+
+def test_primitive_asset_scale_is_applied_to_runtime_geometry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = tmp_path / "scene-package"
+    mesh_dir = package / "assets" / "meshes"
+    mesh_dir.mkdir(parents=True)
+    collision = mesh_dir / "collision.obj"
+    visual = mesh_dir / "visual.obj"
+    cube = {
+        "name": "cube",
+        "vertices": np.asarray(
+            [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]],
+            dtype=float,
+        ),
+        "faces": np.asarray(
+            [[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6], [0, 4, 5], [0, 5, 1], [1, 5, 6], [1, 6, 2], [2, 6, 7], [2, 7, 3], [3, 7, 4], [3, 4, 0]],
+            dtype=int,
+        ),
+    }
+    export_combined_obj([cube], collision)
+    export_combined_obj([cube], visual)
+    runtime = package / "simulator_assets" / "scene.xml"
+    write_runtime_scene(runtime, scene_name="scale fixture", collision_obj=collision, visual_obj=visual)
+    (package / "scene_manifest.json").write_text(
+        json.dumps({"assets": [], "simulator_artifacts": {"motrixsim": {"runtime_scene": str(runtime)}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "real2sim_platform.motrix_scene.validate_runtime_scene",
+        lambda _path, steps: {
+            "ok": True,
+            "steps": steps,
+            "mujoco": {"ok": True},
+            "motrixsim": {"ok": True},
+        },
+    )
+    compose_scene_asset(
+        package,
+        asset_spec={
+            "name": "scaled box",
+            "primitive": "box",
+            "transform": {"scale": [2.0, 3.0, 4.0]},
+            "physics": {"dimensions": [1.0, 2.0, 3.0], "dynamic": True},
+        },
+        source_path=None,
+        validation_steps=4,
+    )
+    from xml.etree import ElementTree as ET
+
+    bodies = ET.parse(runtime).getroot().findall("./worldbody/body")
+    geom = bodies[-1].find("geom")
+    assert geom is not None
+    assert [float(value) for value in geom.attrib["size"].split()] == pytest.approx([1.0, 3.0, 6.0])
 
 
 def test_ascii_3dgs_spz_exporter_uses_real_spark_writer(tmp_path: Path) -> None:

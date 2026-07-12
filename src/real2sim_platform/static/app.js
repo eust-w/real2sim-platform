@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260711-poc-product-v3";
+const STATIC_VERSION = "20260712-motrix-spatial-v1";
 
 const state = {
   datasets: [],
@@ -10,6 +10,7 @@ const state = {
   currentImport: "hf",
   editing: null,
   assetLibrary: [],
+  digitalAssets: [],
   refreshTimer: null,
   taskEvents: null,
   selections: {},
@@ -24,7 +25,7 @@ const $ = (id) => document.getElementById(id);
 
 const taskScopes = {
   dataTaskList: ["hf_import", "media_prepare"],
-  sceneTaskList: ["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"],
+  sceneTaskList: ["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"],
   collectTaskList: ["expert_collection"],
   trainTaskList: ["training"],
   inferTaskList: ["inference"],
@@ -124,16 +125,18 @@ function fillRecipeSelect(id, items, emptyLabel) {
 
 async function refresh({ quiet = false } = {}) {
   try {
-    const [datasets, scenes, models, tasks] = await Promise.all([
+    const [datasets, scenes, models, tasks, digitalAssets] = await Promise.all([
       api("/api/datasets"),
       api("/api/scenes"),
       api("/api/models"),
       api("/api/tasks"),
+      api("/api/assets"),
     ]);
     state.datasets = Array.isArray(datasets) ? datasets : [];
     state.scenes = Array.isArray(scenes) ? scenes : [];
     state.models = Array.isArray(models) ? models : [];
     state.tasks = Array.isArray(tasks) ? tasks : [];
+    state.digitalAssets = Array.isArray(digitalAssets) ? digitalAssets : [];
     if (state.activeSceneId && !state.scenes.some((scene) => scene.id === state.activeSceneId)) {
       state.activeSceneId = "";
     }
@@ -279,6 +282,7 @@ function renderDatasetList() {
     detail: datasetStats(item),
     actions: [
       ["查看", `data-view-json="/api/datasets/${item.id}/manifest"`],
+      ...(item.scan?.spatial_bundle_ready ? [["导入 MotrixSim", `data-dataset-motrixsim="${item.id}"`]] : []),
       ["准备", `data-dataset-prepare="${item.id}"`],
       ["预检", `data-dataset-preflight="${item.id}"`],
     ],
@@ -458,12 +462,13 @@ function fillAssetPreset() {
   const select = $("assetPreset");
   if (!select) return;
   const previous = select.value;
-  select.innerHTML = [`<option value="">选择当前场景包里的资产</option>`]
-    .concat(state.assetLibrary.slice(0, 80).map((asset) => `<option value="${escapeAttr(asset.path)}">${escapeHtml(assetOptionLabel(asset))}</option>`))
+  select.innerHTML = [`<option value="">选择数字资产</option>`]
+    .concat(state.digitalAssets.slice(0, 240).map((asset) => `<option value="${escapeAttr(asset.id)}">${escapeHtml(digitalAssetOptionLabel(asset))}</option>`))
     .join("");
-  select.disabled = state.assetLibrary.length === 0;
-  if (previous && state.assetLibrary.some((asset) => asset.path === previous)) select.value = previous;
-  else if (state.assetLibrary.length) select.value = state.assetLibrary[0].path;
+  select.disabled = state.digitalAssets.length === 0;
+  if (previous && state.digitalAssets.some((asset) => asset.id === previous)) select.value = previous;
+  else if (state.digitalAssets.length) select.value = state.digitalAssets[0].id;
+  updateDigitalAssetHint();
 }
 
 function resourceRow(kind, item, options) {
@@ -1031,18 +1036,40 @@ function reconstructionOptions() {
 }
 
 function sceneAssetPayload() {
-  const preset = $("assetPreset")?.value || "";
+  const selected = state.digitalAssets.find((asset) => asset.id === $("assetPreset")?.value);
+  const primitive = selected?.source_type === "primitive" ? selected.format : undefined;
   return {
-    path: $("assetPath")?.value.trim() || preset,
-    name: $("assetName")?.value.trim() || undefined,
-    kind: $("assetKind")?.value === "auto" ? undefined : $("assetKind")?.value,
-    role: $("assetRole")?.value || "added_asset",
+    source: selected?.source || {},
+    primitive,
+    name: $("assetName")?.value.trim() || selected?.name || undefined,
     transform: {
       translation: [Number($("assetPosX")?.value || 0), Number($("assetPosY")?.value || 0), Number($("assetPosZ")?.value || 0)],
-      scale: Number($("assetScale")?.value || 1),
-      yaw_degrees: Number($("assetYaw")?.value || 0),
+      rotation_euler_degrees: [Number($("assetRotX")?.value || 0), Number($("assetRotY")?.value || 0), Number($("assetRotZ")?.value || 0)],
+      scale: [Number($("assetScaleX")?.value || 1), Number($("assetScaleY")?.value || 1), Number($("assetScaleZ")?.value || 1)],
     },
+    physics: {
+      dynamic: $("assetDynamic")?.checked || false,
+      mass: Number($("assetMass")?.value || 0.25),
+      collision_mode: $("assetCollisionMode")?.value || "visual_and_collision",
+      dimensions: [Number($("assetSizeX")?.value || 0.1), Number($("assetSizeY")?.value || 0.1), Number($("assetSizeZ")?.value || 0.1)],
+    },
+    validation_steps: Number($("assetValidationSteps")?.value || 60),
   };
+}
+
+function digitalAssetOptionLabel(asset) {
+  const source = asset.source_type === "primitive" ? "基础形状" : asset.dataset_name || "已上传资产";
+  const size = asset.size_bytes ? formatBytes(asset.size_bytes) : "";
+  return [asset.name, source, String(asset.format || "").toUpperCase(), size].filter(Boolean).join(" · ");
+}
+
+function updateDigitalAssetHint() {
+  const asset = state.digitalAssets.find((item) => item.id === $("assetPreset")?.value);
+  const hint = $("assetSourceHint");
+  if (!hint) return;
+  if (!asset) hint.textContent = "上传 OBJ、STL、GLB、PLY 或 USDZ 后即可选择";
+  else if (asset.source_type === "primitive") hint.textContent = `${asset.name}会写入 MotrixSim MJCF，可设置尺寸、质量和碰撞模式`;
+  else hint.textContent = `${asset.dataset_name || "上传数据"} · ${String(asset.format || "").toUpperCase()} · 将转换为 MotrixSim 网格并真实校验`;
 }
 
 function preparedDatasets() {
@@ -1064,7 +1091,7 @@ function collectionDatasets() {
 }
 
 function sceneIdFromTask(task) {
-  return task?.type === "scene_reconstruction" ? task.result?.scene_id || "" : "";
+  return ["scene_reconstruction", "motrixsim_scene_import", "scene_asset_compose"].includes(task?.type) ? task.result?.scene_id || "" : "";
 }
 
 function resourceView(kind, item) {
@@ -1130,11 +1157,14 @@ function datasetStats(item) {
   if (item.metrics?.samples) pieces.push(`${item.metrics.samples} 样本`);
   if (item.scan?.image_count) pieces.push(`${item.scan.image_count} 张图片`);
   if (item.scan?.video_count) pieces.push(`${item.scan.video_count} 段视频`);
+  if (item.scan?.usdz_count) pieces.push(`${item.scan.usdz_count} 个 USDZ`);
+  if (item.scan?.splat_count) pieces.push(`${item.scan.splat_count} 个 3DGS`);
   if (!pieces.length) pieces.push("等待扫描");
   return pieces.join(" · ");
 }
 
 function datasetPreviewLabel(item) {
+  if (item.scan?.spatial_bundle_ready) return "空间包";
   if (item.source_type === "prepared_media") return "帧数据";
   if (collectionDatasets().some((dataset) => dataset.id === item.id)) return "采集";
   if ((item.scan?.video_count || 0) > 0) return "视频";
@@ -1173,6 +1203,8 @@ function taskTypeLabel(type) {
     reconstruction_preflight: "重建预检",
     scene_reconstruction: "场景重建",
     motrixsim_asset_import: "MotrixSim 资产导入",
+    motrixsim_scene_import: "MotrixSim 场景包导入",
+    scene_asset_compose: "数字资产合成",
     simulator_validation: "仿真校验",
     renderer_benchmark: "渲染器对比",
     scene_cover_render: "场景封面",
@@ -1219,6 +1251,8 @@ function sourceTypeLabel(type) {
     directory: "目录",
     expert_collection: "专家采集数据",
     scene_reconstruction: "场景重建",
+    motrixsim_spatial_bundle: "MotrixSim 空间包",
+    scene_revision: "场景修订",
     training: "训练模型",
     inference: "推理结果",
     splat_or_pointcloud: "点云 / Splat",
@@ -1362,7 +1396,7 @@ function exportSummary(payload = {}) {
 
 function switchTaskPage(type) {
   if (["hf_import", "media_prepare"].includes(type)) switchTab("data");
-  else if (["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"].includes(type)) switchTab("reconstruct");
+  else if (["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"].includes(type)) switchTab("reconstruct");
   else if (type === "expert_collection") switchTab("collect");
   else if (type === "training") switchTab("train");
   else if (type === "inference") switchTab("infer");
@@ -1561,6 +1595,7 @@ function bindEvents() {
     renderSceneList();
     renderSceneViewerShell();
   });
+  $("assetPreset")?.addEventListener("change", updateDigitalAssetHint);
   $("reconstructInput")?.addEventListener("change", () => {
     renderReconstructDatasetCards();
   });
@@ -1597,17 +1632,20 @@ function bindEvents() {
     const sceneId = $("assetScene")?.value || state.activeSceneId || state.scenes[0]?.id;
     if (!sceneId) return toast("请先选择一个场景。");
     const payload = sceneAssetPayload();
-    if (!payload.path) return toast("请选择资产来源，或在高级入口填写白名单文件。");
+    if (!payload.primitive && !payload.source?.type) return toast("请先从数字资产库选择一个资产。");
     const result = await api(`/api/scenes/${sceneId}/assets`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    state.activeSceneId = result.scene?.id || sceneId;
-    toast("资产已添加，并创建了新的场景修订版本");
+    const task = result.task;
+    if (task) {
+      state.selectedTaskId = task.id;
+      state.tasks.unshift(task);
+    }
+    toast("资产合成任务已创建；双运行时校验通过后生成新版本");
     await refresh({ quiet: true });
-    renderSceneViewerShell();
-    scrollIntoViewIfPossible("#assetRail");
+    if (task) showTask(task.id).catch((error) => toast(error.message));
   });
 
   $("createCollectTask")?.addEventListener("click", async () => {
@@ -1787,6 +1825,16 @@ async function handleBodyClick(event) {
 
   const preflightDataset = event.target.closest("[data-dataset-preflight]");
   if (preflightDataset) await createTask("reconstruction_preflight", { dataset_id: preflightDataset.dataset.datasetPreflight, min_frames: Number($("sceneMinFrames")?.value || 30) });
+
+  const motrixDataset = event.target.closest("[data-dataset-motrixsim]");
+  if (motrixDataset) {
+    const task = await api(`/api/datasets/${motrixDataset.dataset.datasetMotrixsim}/import-motrixsim`, { method: "POST" });
+    state.selectedTaskId = task.id;
+    toast("MotrixSim 场景包导入任务已创建");
+    await refresh({ quiet: true });
+    switchTaskPage("motrixsim_scene_import");
+    showTask(task.id).catch((error) => toast(error.message));
+  }
 
   for (const kind of ["dataset", "scene", "model"]) {
     const edit = event.target.closest(`[data-edit-${kind}]`);

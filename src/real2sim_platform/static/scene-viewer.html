@@ -111,7 +111,15 @@
     scene.add(light);
     scene.add(new THREE.AmbientLight(0x9fb6c8, 0.8));
 
+    const fitRoot = new THREE.Group();
+    const contentRoot = new THREE.Group();
+    fitRoot.add(contentRoot);
+    scene.add(fitRoot);
+
     let loadedObject = null;
+    let overlayObjects = [];
+    let manifestAssets = [];
+    let sourceUpAxis = "Z";
     let sparkRenderer = null;
     let sparkModule = null;
     const debug = {
@@ -119,6 +127,7 @@
       loaded: false,
       assetName: "",
       pointCount: 0,
+      overlayCount: 0,
       errors: [],
       warnings: [],
       canvas: { width: 0, height: 0 },
@@ -193,6 +202,9 @@
         return response.json();
       });
       const assets = Array.isArray(manifest.assets) ? prioritizeAssets(manifest.assets) : [];
+      manifestAssets = assets;
+      sourceUpAxis = String(manifest.coordinate_frame?.up_axis || "Z").toUpperCase();
+      contentRoot.rotation.set(sourceUpAxis === "Z" ? -Math.PI / 2 : 0, 0, 0);
       const renderable = assets.filter(isRenderableAsset);
       assetList.innerHTML = assets.slice(0, 20).map((item, index) => {
         const quality = assetQuality(item, index);
@@ -208,7 +220,12 @@
           showAssetInfo(assets[Number(button.dataset.index)]);
           return;
         }
-        loadAsset(assets[Number(button.dataset.index)], { manual: true }).catch(showError);
+        const selected = assets[Number(button.dataset.index)];
+        if (selected?.role === "added_asset") {
+          status.textContent = `已添加资产 · ${selected.name || "asset"} · 与 MotrixSim 场景使用同一坐标`;
+          return;
+        }
+        loadAsset(selected, { manual: true }).then(() => loadSceneOverlays(assets)).catch(showError);
       });
       status.textContent = rendererStatusText(manifest, assets.length);
       hint.textContent = viewerHint(assets, renderable);
@@ -221,6 +238,7 @@
         // Large 3DGS assets remain an explicit user action. Their real cover is
         // a safer first frame than an automatically generated diagnostic mesh.
         await loadAsset(preferred, { manual: preferred === previewImage });
+        await loadSceneOverlays(assets);
       }
       else if (renderable[0]) addPlaceholder(`可渲染大文件未自动加载：${renderable[0].name || "asset"} · ${renderable[0].size_label || "unknown size"} · 点击按钮手动加载`);
       else addPlaceholder("当前清单没有可直接渲染的 PLY/SPZ/SPLAT/GLB/OBJ 资产");
@@ -264,7 +282,8 @@
         addPlaceholder(`large asset skipped: ${asset.name || "asset"} · ${asset.size_label || "unknown size"} · click to load`);
         return;
       }
-      if (loadedObject) scene.remove(loadedObject);
+      if (loadedObject) contentRoot.remove(loadedObject);
+      clearOverlays();
       const suffix = (asset.name || asset.path || "").toLowerCase().split(".").pop();
       const imageAsset = ["png", "jpg", "jpeg", "webp"].includes(suffix);
       if (!imageAsset) prepareGeometryScene();
@@ -284,16 +303,16 @@
         const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
         const gltf = await withLoadingTimeout(new GLTFLoader().loadAsync(asset.url), `loading timed out: ${asset.name || "asset"}${size}`);
         loadedObject = gltf.scene;
+        contentRoot.add(loadedObject);
         normalizeObjectFromBox(loadedObject);
-        scene.add(loadedObject);
         debug.backend = "three_fallback";
         debug.loaded = true;
         status.textContent = `Three.js fallback · ${asset.name}`;
       } else if (suffix === "obj") {
         status.textContent = `Three.js fallback · loading ${asset.name}${size}`;
         loadedObject = await withLoadingTimeout(new OBJLoader().loadAsync(asset.url), `loading timed out: ${asset.name || "asset"}${size}`);
+        contentRoot.add(loadedObject);
         normalizeObjectFromBox(loadedObject);
-        scene.add(loadedObject);
         debug.backend = "three_fallback";
         debug.loaded = true;
         status.textContent = `Three.js fallback · ${asset.name}`;
@@ -309,11 +328,13 @@
     }
 
     function isRenderableAsset(asset) {
+      if (asset?.role === "added_asset" && asset?.viewer_primitive) return true;
       const suffix = String(asset?.name || asset?.path || "").toLowerCase().split(".").pop();
       return ["ply", "spz", "splat", "ksplat", "sog", "glb", "gltf", "obj", "png", "jpg", "jpeg", "webp"].includes(suffix);
     }
 
     function assetTypeLabel(asset) {
+      if (asset?.role === "added_asset") return "已添加资产";
       const suffix = String(asset?.name || asset?.path || "").toLowerCase().split(".").pop();
       const kind = String(asset?.kind || "");
       if (["ply", "spz", "splat", "ksplat", "sog", "glb", "gltf", "obj"].includes(suffix)) return "可预览";
@@ -351,7 +372,8 @@
     }
 
     async function addImagePreview(asset) {
-      if (loadedObject) scene.remove(loadedObject);
+      if (loadedObject) contentRoot.remove(loadedObject);
+      clearOverlays();
       loadedObject = null;
       status.textContent = `图片预览 · loading ${asset.name || "asset"}`;
       const texture = await withLoadingTimeout(new THREE.TextureLoader().loadAsync(asset.url), `loading timed out: ${asset.name || "asset"}`);
@@ -420,7 +442,7 @@
         status.textContent = `Spark · loading ${asset.name}${asset.size_label ? ` · ${asset.size_label}` : ""}`;
         const splatMesh = new spark.SplatMesh({ url: asset.url });
         loadedObject = splatMesh;
-        scene.add(splatMesh);
+        contentRoot.add(splatMesh);
         await splatMesh.initialized;
         normalizeObjectFromBox(splatMesh);
         const count = splatMesh.splats?.getNumSplats?.() || splatMesh.packedSplats?.numSplats || 0;
@@ -432,7 +454,7 @@
         console.info("Spark preview unavailable; using Three.js fallback", error);
         debug.warnings.push(error.message || String(error));
         if (loadedObject) {
-          scene.remove(loadedObject);
+          contentRoot.remove(loadedObject);
           loadedObject = null;
         }
         if (suffix !== "ply") throw error;
@@ -453,12 +475,96 @@
         color: 0x58c4a8,
       });
       loadedObject = new THREE.Points(geometry, material);
+      contentRoot.add(loadedObject);
       normalizeObject(loadedObject, geometry.boundingSphere);
-      scene.add(loadedObject);
       debug.backend = "three_fallback";
       debug.loaded = true;
       debug.pointCount = count;
       status.textContent = `Three.js fallback · ${asset.name} · ${count} points`;
+    }
+
+    async function loadSceneOverlays(assets) {
+      clearOverlays();
+      if (!loadedObject) return;
+      const overlays = assets.filter((asset) => asset?.role === "added_asset");
+      for (const asset of overlays) {
+        try {
+          const object = await createOverlayObject(asset);
+          if (!object) continue;
+          applyAssetTransform(object, asset.transform || {});
+          object.userData.real2simAsset = asset.name || asset.path || "asset";
+          contentRoot.add(object);
+          overlayObjects.push(object);
+        } catch (error) {
+          debug.warnings.push(`overlay ${asset.name || "asset"}: ${error.message || error}`);
+          console.warn("Unable to load scene overlay", asset, error);
+        }
+      }
+      debug.overlayCount = overlayObjects.length;
+      if (overlayObjects.length) hint.textContent = `已叠加 ${overlayObjects.length} 个 MotrixSim 数字资产；位置、旋转、缩放与仿真场景保持一致。`;
+    }
+
+    async function createOverlayObject(asset) {
+      const primitive = String(asset.viewer_primitive || "").toLowerCase();
+      const dimensions = Array.isArray(asset.physics?.dimensions) ? asset.physics.dimensions.map(Number) : [0.1, 0.1, 0.1];
+      const rgba = Array.isArray(asset.physics?.rgba) ? asset.physics.rgba.map(Number) : [0.13, 0.76, 0.67, 1];
+      const material = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(rgba[0], rgba[1], rgba[2]),
+        transparent: rgba[3] < 1,
+        opacity: rgba[3],
+        roughness: 0.55,
+        metalness: 0.05,
+      });
+      if (primitive === "box") return new THREE.Mesh(new THREE.BoxGeometry(dimensions[0], dimensions[1], dimensions[2]), material);
+      if (primitive === "sphere") return new THREE.Mesh(new THREE.SphereGeometry(Math.max(...dimensions) / 2, 32, 20), material);
+      if (primitive === "cylinder") {
+        const geometry = new THREE.CylinderGeometry(Math.max(dimensions[0], dimensions[1]) / 2, Math.max(dimensions[0], dimensions[1]) / 2, dimensions[2], 32);
+        geometry.rotateX(Math.PI / 2);
+        return new THREE.Mesh(geometry, material);
+      }
+      if (primitive === "capsule") {
+        const radius = Math.max(dimensions[0], dimensions[1]) / 2;
+        const bodyLength = Math.max(0.001, dimensions[2] - radius * 2);
+        const group = new THREE.Group();
+        const cylinder = new THREE.CylinderGeometry(radius, radius, bodyLength, 32);
+        cylinder.rotateX(Math.PI / 2);
+        group.add(new THREE.Mesh(cylinder, material));
+        const capGeometry = new THREE.SphereGeometry(radius, 28, 18);
+        const first = new THREE.Mesh(capGeometry, material);
+        const second = new THREE.Mesh(capGeometry, material);
+        first.position.z = bodyLength / 2;
+        second.position.z = -bodyLength / 2;
+        group.add(first, second);
+        return group;
+      }
+      if (!asset.url) return null;
+      const suffix = String(asset.name || asset.path || "").toLowerCase().split(".").pop();
+      if (suffix === "glb" || suffix === "gltf") {
+        const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+        return (await new GLTFLoader().loadAsync(asset.url)).scene;
+      }
+      if (suffix === "obj") return new OBJLoader().loadAsync(asset.url);
+      if (suffix === "ply") {
+        const geometry = await new PLYLoader().loadAsync(asset.url);
+        geometry.computeVertexNormals();
+        return new THREE.Mesh(geometry, material);
+      }
+      return null;
+    }
+
+    function applyAssetTransform(object, transform) {
+      const translation = Array.isArray(transform.translation) ? transform.translation.map(Number) : [0, 0, 0];
+      const rotation = Array.isArray(transform.rotation_euler_degrees) ? transform.rotation_euler_degrees.map(Number) : [0, 0, Number(transform.yaw_degrees || 0)];
+      const scale = Array.isArray(transform.scale) ? transform.scale.map(Number) : [Number(transform.scale || 1), Number(transform.scale || 1), Number(transform.scale || 1)];
+      object.position.set(translation[0] || 0, translation[1] || 0, translation[2] || 0);
+      object.rotation.set(THREE.MathUtils.degToRad(rotation[0] || 0), THREE.MathUtils.degToRad(rotation[1] || 0), THREE.MathUtils.degToRad(rotation[2] || 0));
+      object.scale.set(scale[0] || 1, scale[1] || 1, scale[2] || 1);
+    }
+
+    function clearOverlays() {
+      for (const object of overlayObjects) contentRoot.remove(object);
+      overlayObjects = [];
+      debug.overlayCount = 0;
     }
 
     function pointSizeFor(count, asset) {
@@ -486,11 +592,17 @@
       return sparkModule;
     }
 
-    function normalizeObject(object, sphere) {
-      if (!sphere) return;
-      object.position.sub(sphere.center);
+    function normalizeObject(object, _sphere) {
+      fitRoot.position.set(0, 0, 0);
+      fitRoot.scale.set(1, 1, 1);
+      object.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(object);
+      if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return;
+      const sphere = new THREE.Sphere();
+      box.getBoundingSphere(sphere);
       const scale = sphere.radius > 0 ? 1.6 / sphere.radius : 1;
-      object.scale.setScalar(scale);
+      fitRoot.scale.setScalar(scale);
+      fitRoot.position.copy(sphere.center).multiplyScalar(-scale);
       controls.target.set(0, 0, 0);
       setCoverCamera();
       controls.update();
@@ -512,19 +624,17 @@
     }
 
     function normalizeObjectFromBox(object) {
-      const box = new THREE.Box3().setFromObject(object);
-      if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return;
-      const sphere = new THREE.Sphere();
-      box.getBoundingSphere(sphere);
-      normalizeObject(object, sphere);
+      normalizeObject(object, null);
     }
 
     function addPlaceholder(message) {
-      if (loadedObject) scene.remove(loadedObject);
+      if (loadedObject) contentRoot.remove(loadedObject);
+      clearOverlays();
       const geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
       const material = new THREE.MeshStandardMaterial({ color: 0x58c4a8, roughness: 0.65 });
       loadedObject = new THREE.Mesh(geometry, material);
-      scene.add(loadedObject);
+      contentRoot.add(loadedObject);
+      normalizeObjectFromBox(loadedObject);
       debug.backend = "placeholder";
       debug.loaded = false;
       status.textContent = message;
