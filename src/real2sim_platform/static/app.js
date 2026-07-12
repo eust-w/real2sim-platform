@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260712-scene-composition-v1";
+const STATIC_VERSION = "20260712-scene-composition-v2";
 
 const state = {
   datasets: [],
@@ -34,6 +34,9 @@ const state = {
     savedSceneId: "",
     collectionReady: false,
     pendingTaskId: "",
+    hydratedSceneId: "",
+    hydratingSceneId: "",
+    hydrationError: "",
   },
 };
 
@@ -379,6 +382,92 @@ function ensureCompositionDraft() {
   if (!validIds.has(draft.selectedId)) draft.selectedId = draft.robotId ? `robot:${draft.robotId}` : draft.assets[0]?.instance_id || "";
 }
 
+function resetCompositionForScene(sceneId) {
+  Object.assign(state.composition, {
+    baseSceneId: sceneId || "",
+    robotId: "",
+    robotTransform: null,
+    assets: [],
+    selectedId: "",
+    history: [],
+    future: [],
+    bounds: null,
+    previewSceneId: "",
+    savedSceneId: "",
+    collectionReady: false,
+    pendingTaskId: "",
+    hydratedSceneId: "",
+    hydratingSceneId: "",
+    hydrationError: "",
+  });
+}
+
+function compositionAssetFromManifest(asset, index) {
+  const catalog = state.digitalAssets.find((item) => item.id === asset?.catalog_id) || {};
+  return {
+    catalog_id: String(asset?.catalog_id || ""),
+    instance_id: String(asset?.instance_id || `manifest_asset_${index + 1}`),
+    name: String(asset?.name || catalog.name || `数字资产 ${index + 1}`),
+    source: cloneValue(asset?.source || catalog.source || {}),
+    transform: cloneValue(asset?.transform || catalog.default_transform || {
+      translation: [0, 0, 0.1],
+      rotation_euler_degrees: [0, 0, 0],
+      scale: [1, 1, 1],
+    }),
+    physics: cloneValue(asset?.physics || catalog.physics || {
+      dynamic: false,
+      mass: 0.25,
+      collision_mode: "visual_and_collision",
+      dimensions: [0.1, 0.1, 0.1],
+    }),
+  };
+}
+
+async function hydrateCompositionFromScene(sceneId) {
+  const draft = state.composition;
+  if (!sceneId || draft.hydratedSceneId === sceneId || draft.hydratingSceneId === sceneId) return;
+  draft.hydratingSceneId = sceneId;
+  draft.hydrationError = "";
+  try {
+    const manifest = await api(`/api/scenes/${encodeURIComponent(sceneId)}/manifest`);
+    if (draft.baseSceneId !== sceneId) return;
+    const scene = state.scenes.find((item) => item.id === sceneId);
+    const composition = manifest?.composition && typeof manifest.composition === "object" ? manifest.composition : null;
+    const manifestAssets = Array.isArray(manifest?.assets) ? manifest.assets : [];
+    const robotAsset = composition?.robot || manifestAssets.find((item) => item?.role === "robot") || null;
+    const robotId = String(robotAsset?.robot_id || scene?.metadata?.robot_id || "");
+    const registeredRobot = state.robots.find((item) => item.id === robotId);
+    if (registeredRobot) {
+      draft.robotId = registeredRobot.id;
+      draft.robotTransform = cloneValue(robotAsset?.source_transform || registeredRobot.default_transform);
+    }
+    const compositionAssets = Array.isArray(composition?.assets)
+      ? composition.assets
+      : manifestAssets.filter((item) => item?.role === "added_asset");
+    draft.assets = compositionAssets
+      .filter((item) => item && item.catalog_id)
+      .map(compositionAssetFromManifest);
+    draft.selectedId = draft.robotId ? `robot:${draft.robotId}` : draft.assets[0]?.instance_id || "";
+    draft.savedSceneId = composition ? sceneId : "";
+    draft.collectionReady = Boolean(composition?.collection_ready || scene?.metadata?.collection_ready);
+    draft.history = [];
+    draft.future = [];
+    const environmentMode = composition?.environment_collision_mode;
+    if ($("compositionEnvironmentMode") && ["isolated_task_workspace", "reconstructed_collision"].includes(environmentMode)) {
+      $("compositionEnvironmentMode").value = environmentMode;
+    }
+    if ($("compositionName") && scene?.name) $("compositionName").value = scene.name;
+  } catch (error) {
+    if (draft.baseSceneId === sceneId) draft.hydrationError = error.message || "读取组合场景失败";
+  } finally {
+    if (draft.baseSceneId === sceneId) {
+      draft.hydratedSceneId = sceneId;
+      draft.hydratingSceneId = "";
+      renderComposition();
+    }
+  }
+}
+
 function renderComposition() {
   if (!$("composeRobotList")) return;
   ensureCompositionDraft();
@@ -386,6 +475,9 @@ function renderComposition() {
   const baseScene = state.scenes.find((scene) => scene.id === draft.baseSceneId);
   const baseSelect = $("composeBaseScene");
   if (baseSelect && baseScene) baseSelect.value = baseScene.id;
+  if (baseScene && draft.hydratedSceneId !== baseScene.id && draft.hydratingSceneId !== baseScene.id) {
+    hydrateCompositionFromScene(baseScene.id).catch((error) => console.warn(error));
+  }
 
   setHtml("composeRobotList", state.robots.map((robot) => `
     <button class="composition-resource-card ${robot.id === draft.robotId ? "active" : ""}" type="button" draggable="true" data-compose-robot="${escapeAttr(robot.id)}">
@@ -424,12 +516,13 @@ function renderComposition() {
   }
   const savedScene = state.scenes.find((scene) => scene.id === draft.savedSceneId);
   const motrixReady = Boolean(state.capabilities?.runtimes?.motrixsim?.ready);
+  const hydrating = draft.hydratingSceneId === baseScene?.id;
   setHtml("composeCompatibility", `
     <strong>${motrixReady ? "MotrixSim 运行时已就绪" : "MotrixSim 运行时不可用"}</strong>
     <span>RM65：${draft.robotId ? "已加入" : "未选择"}</span>
     <span>采集对象：${requiredReady ? "茶几、抓取方块、放置目标齐全" : "还需加入茶几、抓取方块和放置目标"}</span>
-    <span>保存状态：${savedScene ? `已生成 ${escapeHtml(resourceDisplayName(savedScene))}` : pending ? escapeHtml(statusLabel(pending.status)) : "尚未保存"}</span>`);
-  setText("composeStageStatus", baseScene ? `${resourceDisplayName(baseScene)} · ${draft.assets.length} 个数字资产 · ${draft.robotId ? "RM65 已加入" : "未选择机器人"}` : "等待基础场景");
+    <span>保存状态：${draft.hydrationError ? `读取失败：${escapeHtml(draft.hydrationError)}` : hydrating ? "正在读取已有场景版本" : savedScene ? `已生成 ${escapeHtml(resourceDisplayName(savedScene))}` : pending ? escapeHtml(statusLabel(pending.status)) : "尚未保存"}</span>`);
+  setText("composeStageStatus", baseScene ? `${resourceDisplayName(baseScene)} · ${hydrating ? "正在读取资产" : `${draft.assets.length} 个数字资产`} · ${draft.robotId ? "RM65 已加入" : "未选择机器人"}` : "等待基础场景");
   setActionAvailability("saveSceneComposition", state.user?.role !== "viewer" && Boolean(baseScene && draft.robotId && motrixReady), motrixReady ? "请先选择基础场景和机器人" : "MotrixSim worker 尚未就绪");
   setActionAvailability("testSceneComposition", Boolean(savedScene), "请先保存并等待组合场景通过运行时校验");
   setActionAvailability("collectSceneComposition", Boolean(savedScene && draft.collectionReady), "组合场景需包含茶几、抓取方块和放置目标并通过校验");
@@ -2000,11 +2093,7 @@ function bindEvents() {
     renderReconstructDatasetCards();
   });
   $("composeBaseScene")?.addEventListener("change", () => {
-    pushCompositionHistory();
-    state.composition.baseSceneId = $("composeBaseScene").value;
-    state.composition.bounds = null;
-    state.composition.previewSceneId = "";
-    markCompositionDirty();
+    resetCompositionForScene($("composeBaseScene").value);
     renderComposition();
   });
   $("loadPickPlacePreset")?.addEventListener("click", loadPickPlacePreset);

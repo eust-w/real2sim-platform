@@ -534,6 +534,9 @@
 
     async function loadSceneOverlays(assets) {
       clearOverlays();
+      // Composer mode rebuilds these objects from the editable draft. Loading
+      // manifest overlays as well would duplicate robots and task assets.
+      if (composerMode) return;
       if (!loadedObject) return;
       const overlays = assets.filter((asset) => ["added_asset", "robot"].includes(asset?.role));
       for (const asset of overlays) {
