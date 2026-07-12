@@ -119,6 +119,7 @@
     let loadedObject = null;
     let overlayObjects = [];
     let manifestAssets = [];
+    let manifestBounds = null;
     let sourceUpAxis = "Z";
     let sparkRenderer = null;
     let sparkModule = null;
@@ -204,6 +205,7 @@
       });
       const assets = Array.isArray(manifest.assets) ? prioritizeAssets(manifest.assets) : [];
       manifestAssets = assets;
+      manifestBounds = normalizeManifestBounds(manifest.bounds_m);
       sourceUpAxis = String(manifest.coordinate_frame?.up_axis || "Z").toUpperCase();
       contentRoot.rotation.set(sourceUpAxis === "Z" ? -Math.PI / 2 : 0, 0, 0);
       const renderable = assets.filter(isRenderableAsset);
@@ -480,7 +482,7 @@
           contentRoot.remove(splatMesh);
           return;
         }
-        normalizeObjectFromBox(splatMesh);
+        if (!normalizeObjectFromManifestBounds()) normalizeObjectFromBox(splatMesh);
         const count = splatMesh.splats?.getNumSplats?.() || splatMesh.packedSplats?.numSplats || 0;
         debug.backend = "spark";
         debug.loaded = true;
@@ -647,6 +649,33 @@
       controls.target.set(0, 0, 0);
       setCoverCamera();
       controls.update();
+    }
+
+    function normalizeManifestBounds(value) {
+      const min = Array.isArray(value?.min) ? value.min.map(Number) : [];
+      const max = Array.isArray(value?.max) ? value.max.map(Number) : [];
+      if (min.length !== 3 || max.length !== 3 || [...min, ...max].some((item) => !Number.isFinite(item))) return null;
+      if (max.some((item, index) => item <= min[index])) return null;
+      return { min, max };
+    }
+
+    function normalizeObjectFromManifestBounds() {
+      if (!manifestBounds) return false;
+      fitRoot.position.set(0, 0, 0);
+      fitRoot.scale.set(1, 1, 1);
+      const min = new THREE.Vector3(...manifestBounds.min);
+      const max = new THREE.Vector3(...manifestBounds.max);
+      const center = min.clone().add(max).multiplyScalar(0.5).applyEuler(contentRoot.rotation);
+      const radius = max.clone().sub(min).length() * 0.5;
+      if (!Number.isFinite(radius) || radius <= 0) return false;
+      const scale = 1.6 / radius;
+      fitRoot.scale.setScalar(scale);
+      fitRoot.position.copy(center).multiplyScalar(-scale);
+      controls.target.set(0, 0, 0);
+      setCoverCamera();
+      controls.update();
+      debug.framing = "manifest_bounds";
+      return true;
     }
 
     function setCoverCamera() {

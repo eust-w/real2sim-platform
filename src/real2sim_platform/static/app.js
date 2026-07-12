@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260712-motrix-spatial-v3";
+const STATIC_VERSION = "20260712-motrix-spatial-v4";
 
 const state = {
   datasets: [],
