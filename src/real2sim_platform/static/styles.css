@@ -320,7 +320,7 @@ body.composition-dragging .composition-drop-overlay { display: grid; pointer-eve
 .axis-grid input { min-width: 0; padding: 7px 6px; }
 .compatibility-card { display: grid; gap: 6px; padding: 10px; border: 1px solid #255f57; border-radius: 6px; background: #09201e; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .compatibility-card strong { color: #74dfcb; }
-.composition-action-bar { position: sticky; bottom: 8px; z-index: 20; display: grid; grid-template-columns: minmax(240px, 1fr) minmax(180px, .75fr) minmax(180px, .75fr) minmax(180px, .75fr); align-items: end; gap: 9px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: rgba(8, 20, 27, .96); box-shadow: 0 14px 40px rgba(0, 0, 0, .38); backdrop-filter: blur(8px); }
+.composition-action-bar { position: sticky; bottom: 8px; z-index: 20; display: grid; grid-template-columns: minmax(220px, 1.25fr) minmax(180px, .9fr) repeat(3, minmax(150px, .85fr)); align-items: end; gap: 9px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: rgba(8, 20, 27, .96); box-shadow: 0 14px 40px rgba(0, 0, 0, .38); backdrop-filter: blur(8px); }
 .composition-action-bar button { min-height: 39px; }
 .composition-tasks-panel { margin-top: 10px; }
 .composition-inspector-body > fieldset[disabled] { opacity: .45; }
