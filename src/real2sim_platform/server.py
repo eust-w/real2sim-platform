@@ -27,7 +27,7 @@ from . import __version__
 from .adapters import SPARK_VENDOR_PATH, collect_task_reports, enrich_scene_manifest_assets, run_doctor, scan_dataset
 from .auth import AuthManager, AuthenticationError, SESSION_COOKIE, validate_password, validate_role, validate_username
 from .config import PlatformConfig, ensure_workspace, is_path_allowed, load_config, write_default_config
-from .motrix_scene import SUPPORTED_MESH_SUFFIXES, SUPPORTED_PRIMITIVES
+from .motrix_scene import COMPOSITION_ASSET_RECIPES, SUPPORTED_MESH_SUFFIXES, SUPPORTED_PRIMITIVES, composition_asset_catalog
 from .source_revision import read_source_revision
 from .storage import BosStorage, StorageBoundaryError, StorageUnavailable, safe_object_name, sha256_file
 from .store import PlatformStore
@@ -56,6 +56,28 @@ class SceneAssetRequest(BaseModel):
     physics: dict[str, Any] = Field(default_factory=dict)
     validation_steps: int = 60
     revision_name: str | None = None
+
+
+class SceneCompositionRobotRequest(BaseModel):
+    robot_id: str
+    transform: dict[str, Any] = Field(default_factory=dict)
+
+
+class SceneCompositionAssetRequest(BaseModel):
+    catalog_id: str
+    instance_id: str
+    name: str | None = None
+    source: dict[str, Any] = Field(default_factory=dict)
+    path: str = ""
+    transform: dict[str, Any] = Field(default_factory=dict)
+    physics: dict[str, Any] = Field(default_factory=dict)
+
+
+class SceneCompositionRequest(BaseModel):
+    name: str | None = None
+    robot: SceneCompositionRobotRequest
+    assets: list[SceneCompositionAssetRequest] = Field(default_factory=list)
+    validation_steps: int = 120
 
 
 class CreateTaskRequest(BaseModel):
@@ -307,6 +329,7 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
                 "motrixsim": True,
                 "motrixsim_scene_import": True,
                 "scene_asset_compose": True,
+                "scene_composition": True,
             },
         }
 
@@ -594,6 +617,10 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
     def list_digital_assets() -> list[dict[str, Any]]:
         return _digital_asset_catalog(store)
 
+    @app.get("/api/robots")
+    def list_robots() -> list[dict[str, Any]]:
+        return _robot_catalog(cfg)
+
     @app.post("/api/scenes/import")
     def import_scene(payload: ImportSceneRequest) -> dict[str, Any]:
         path = Path(payload.path)
@@ -650,6 +677,27 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
             "message": "数字资产合成任务已创建；通过 MotrixSim 与 MuJoCo 校验后会生成新场景版本",
         }
 
+    @app.post("/api/scenes/{scene_id}/compose")
+    def compose_scene(scene_id: str, payload: SceneCompositionRequest) -> dict[str, Any]:
+        try:
+            store.get_scene(scene_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="scene not found") from exc
+        composition = payload.model_dump(exclude_none=True)
+        params = {
+            "scene_id": scene_id,
+            "name": composition.pop("name", None),
+            "validation_steps": composition.pop("validation_steps", 120),
+            "composition": composition,
+        }
+        task = _queue_task("scene_composition", params)
+        return {
+            "ok": True,
+            "scene_id": scene_id,
+            "task": _with_task_view_model(task),
+            "message": "场景组合任务已创建；RM65、数字资产与 MotrixSim 运行时校验完成后会生成独立场景版本",
+        }
+
     @app.patch("/api/scenes/{scene_id}")
     def update_scene(scene_id: str, payload: UpdateEntityRequest) -> dict[str, Any]:
         try:
@@ -696,7 +744,7 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
         payload = CreateTaskRequest(type=task_type, params=params)
         _validate_task_payload(payload, cfg)
         _validate_task_resources(store, payload)
-        if payload.type not in {"scene_reconstruction", "reconstruction_preflight", "media_prepare", "expert_collection", "training", "inference", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize", "hf_import", "bos_import", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "simulator_validation"}:
+        if payload.type not in {"scene_reconstruction", "reconstruction_preflight", "media_prepare", "expert_collection", "training", "inference", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize", "hf_import", "bos_import", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "scene_composition", "simulator_validation"}:
             raise ValueError(f"unknown task type: {payload.type}")
         run_dir = cfg.runs_dir / payload.type / _next_run_name(cfg.runs_dir / payload.type, payload.type)
         return store.create_task(task_type=payload.type, params=payload.params, run_dir=run_dir)
@@ -1169,13 +1217,13 @@ def _metrics_summary(kind: str, metrics: dict[str, Any], scan: dict[str, Any], m
 def _resource_subtitle(kind: str, entity: dict[str, Any], manifest: dict[str, Any]) -> str:
     source = str(entity.get("source_type") or manifest.get("source_type") or "")
     version = str(entity.get("version") or "")
-    label = {"prepared_media": "已准备帧数据", "expert_collection": "专家采集数据", "scene_reconstruction": "场景重建", "motrixsim_spatial_bundle": "MotrixSim 空间包", "scene_revision": "场景修订", "huggingface": "HuggingFace", "upload": "上传文件", "browser_upload": "浏览器上传", "local_path": "本地导入"}.get(source, source or kind)
+    label = {"prepared_media": "已准备帧数据", "expert_collection": "专家采集数据", "scene_reconstruction": "场景重建", "motrixsim_spatial_bundle": "MotrixSim 空间包", "scene_revision": "场景修订", "scene_composition": "场景组合", "huggingface": "HuggingFace", "upload": "上传文件", "browser_upload": "浏览器上传", "local_path": "本地导入"}.get(source, source or kind)
     return f"{label}{' · ' + version if version else ''}"
 
 
 def _task_display_name(task: dict[str, Any]) -> str:
     params = task.get("params") or {}
-    return str(params.get("scene_name") or params.get("output_name") or _task_type_label(str(task.get("type") or "")))
+    return str(params.get("scene_name") or params.get("output_name") or params.get("name") or _task_type_label(str(task.get("type") or "")))
 
 
 def _task_type_label(task_type: str) -> str:
@@ -1187,6 +1235,7 @@ def _task_type_label(task_type: str) -> str:
         "motrixsim_asset_import": "MotrixSim 资产导入",
         "motrixsim_scene_import": "MotrixSim 场景包导入",
         "scene_asset_compose": "数字资产合成",
+        "scene_composition": "场景组合",
         "simulator_validation": "仿真校验",
         "expert_collection": "专家采集",
         "training": "模型训练",
@@ -1234,6 +1283,30 @@ def _validate_task_payload(payload: CreateTaskRequest, cfg: PlatformConfig) -> N
                 raise HTTPException(status_code=400, detail="asset file not found")
             if not is_path_allowed(path, cfg):
                 raise HTTPException(status_code=403, detail="asset path is outside configured import roots")
+    if payload.type == "scene_composition":
+        if not params.get("scene_id"):
+            raise HTTPException(status_code=400, detail="scene_composition requires scene_id")
+        composition = params.get("composition") or {}
+        robot = composition.get("robot") or {}
+        if robot.get("robot_id") != "rm65":
+            raise HTTPException(status_code=400, detail="scene_composition currently requires the registered RM65 robot")
+        assets = composition.get("assets") or []
+        if not isinstance(assets, list) or len(assets) > 50:
+            raise HTTPException(status_code=400, detail="scene_composition supports at most 50 asset instances")
+        instance_ids = [str(item.get("instance_id") or "") for item in assets if isinstance(item, dict)]
+        if any(not value for value in instance_ids) or len(instance_ids) != len(set(instance_ids)):
+            raise HTTPException(status_code=400, detail="composition asset instance_id values must be present and unique")
+        for item in assets:
+            catalog_id = str(item.get("catalog_id") or "")
+            source = item.get("source") or {}
+            if catalog_id in COMPOSITION_ASSET_RECIPES:
+                continue
+            if catalog_id.startswith("primitive:") and catalog_id.split(":", 1)[1] in SUPPORTED_PRIMITIVES:
+                continue
+            if source.get("type") != "dataset" or not (source.get("dataset_id") and source.get("relative_path")):
+                raise HTTPException(status_code=400, detail=f"unregistered composition asset requires a dataset source: {catalog_id}")
+        if not 1 <= int(params.get("validation_steps", 120)) <= 5000:
+            raise HTTPException(status_code=400, detail="validation_steps must be between 1 and 5000")
     if payload.type == "hf_import":
         repo_type = params.get("repo_type", "dataset")
         if repo_type != "dataset":
@@ -1321,6 +1394,20 @@ def _validate_task_resources(store: PlatformStore, payload: CreateTaskRequest) -
                     raise HTTPException(status_code=400, detail="资产路径越出所选数据集")
                 if not candidate.is_file() or candidate.suffix.lower() not in SUPPORTED_MESH_SUFFIXES:
                     raise HTTPException(status_code=400, detail="所选数据集文件不是可导入 MotrixSim 的网格资产")
+        if payload.type == "scene_composition":
+            scene = store.get_scene(str(params["scene_id"]))
+            package = Path(str((scene.get("metadata") or {}).get("package") or ""))
+            if not package.is_dir() or not (package / "scene_manifest.json").is_file():
+                raise HTTPException(status_code=400, detail="所选场景不是可编辑的 MotrixSim 场景包")
+            for item in (params.get("composition") or {}).get("assets") or []:
+                source = item.get("source") or {}
+                if source.get("type") != "dataset":
+                    continue
+                dataset = store.get_dataset(str(source.get("dataset_id") or ""))
+                root = Path(dataset["path"]).resolve()
+                candidate = (root / str(source.get("relative_path") or "")).resolve()
+                if candidate == root or root not in candidate.parents or not candidate.is_file() or candidate.suffix.lower() not in SUPPORTED_MESH_SUFFIXES:
+                    raise HTTPException(status_code=400, detail="组合资产不是数据集内可导入 MotrixSim 的网格文件")
         if payload.type == "training" and params.get("dataset_id"):
             dataset = store.get_dataset(str(params["dataset_id"]))
             source = str(dataset.get("source_type") or "")
@@ -1342,6 +1429,15 @@ def _validate_task_resources(store: PlatformStore, payload: CreateTaskRequest) -
 def _digital_asset_catalog(store: PlatformStore) -> list[dict[str, Any]]:
     primitive_names = {"box": "立方体", "sphere": "球体", "cylinder": "圆柱体", "capsule": "胶囊体"}
     items: list[dict[str, Any]] = [
+        {
+            **recipe,
+            "source_type": "recipe",
+            "format": "compound" if len(recipe.get("components") or []) > 1 else str((recipe.get("components") or [{}])[0].get("primitive") or "primitive"),
+            "source": {"type": "recipe", "recipe_id": recipe["id"]},
+            "capabilities": {"motrixsim_physics": True, "browser_preview": True, "dynamic": bool((recipe.get("physics") or {}).get("dynamic")), "collision": str((recipe.get("physics") or {}).get("collision_mode")) != "visual_only"},
+        }
+        for recipe in composition_asset_catalog()
+    ] + [
         {
             "id": f"primitive:{primitive}",
             "name": primitive_names.get(primitive, primitive),
@@ -1379,6 +1475,7 @@ def _digital_asset_catalog(store: PlatformStore) -> list[dict[str, Any]]:
                     "relative_path": relative.as_posix(),
                     "format": suffix.lstrip("."),
                     "size_bytes": candidate.stat().st_size,
+                    "preview_url": _workspace_public_url(candidate) if suffix in {".obj", ".glb", ".gltf", ".ply"} else "",
                     "source": {"type": "dataset", "dataset_id": dataset["id"], "relative_path": relative.as_posix()},
                     "capabilities": {
                         "motrixsim_physics": True,
@@ -1389,6 +1486,30 @@ def _digital_asset_catalog(store: PlatformStore) -> list[dict[str, Any]]:
                 }
             )
     return items
+
+
+def _robot_catalog(cfg: PlatformConfig) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "rm65",
+            "name": "RM65 双指夹爪",
+            "manufacturer": "睿尔曼",
+            "simulator": "motrixsim",
+            "description": "6 轴机械臂、双指夹爪、7 个位置执行器和真实碰撞体",
+            "preview_url": "/static/assets/robots/rm65.glb",
+            "controller": "rm65_pick_place_6d_ik",
+            "joint_count": 6,
+            "actuator_count": 7,
+            "payload_kg": 5,
+            "default_transform": {"translation": [1.03, 0.0, 0.011], "rotation_euler_degrees": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "source": {
+                "repository": "Motphys/motrixsim-docs",
+                "commit": os.environ.get("REAL2SIM_MOTRIXSIM_DOCS_COMMIT", "2beecea67c81d25e29cefa30a80c0ddad7b44dde"),
+                "mjcf": "examples/assets/rm65_open_cabinet/mjx_rm65.xml",
+            },
+            "capabilities": {"motrixsim": True, "mujoco": True, "browser_preview": True, "pick_place": True},
+        }
+    ]
 
 
 def _active_admin_count(store: PlatformStore) -> int:
@@ -1512,6 +1633,7 @@ def _runtime_paths(cfg: PlatformConfig) -> dict[str, str]:
         "gsplat_python": str(cfg.gsplat_python),
         "cuda_home": str(cfg.cuda_home),
         "runtime_env_script": str(cfg.runtime_env_script),
+        "motrixsim_docs_root": str(cfg.motrixsim_docs_root),
         "discoverse_commit": cfg.discoverse_commit,
         "act_commit": cfg.act_commit,
         "anysplat_commit": cfg.anysplat_commit,

@@ -32,6 +32,7 @@ class PlatformConfig:
     anysplat_python: Path = Path("/opt/real2sim_paper_runtime/envs/anysplat/bin/python")
     cuda_home: Path = Path("/usr/local/cuda-12.1")
     runtime_env_script: Path = Path("/opt/gs_playground_real2sim_48q/scripts/real2sim_wuying_paper_env.sh")
+    motrixsim_docs_root: Path = Path("/opt/motrixsim-docs")
     allowed_path_roots: tuple[Path, ...] = ()
     worker_mode: str = "embedded"
     worker_id: str = "local-worker"
@@ -99,6 +100,7 @@ class PlatformConfig:
             self.discoverse_root,
             self.runtime_root,
             self.anysplat_root,
+            self.motrixsim_docs_root,
             Path("/opt/gs_playground_real2sim_48q"),
             Path("/tmp"),
         )
@@ -129,6 +131,7 @@ def load_config(path: Path | None = None) -> PlatformConfig:
         anysplat_python=Path(str(values.get("anysplat_python", values.get("gsplat_python", "/opt/real2sim_paper_runtime/envs/anysplat/bin/python")))),
         cuda_home=Path(str(values.get("cuda_home", "/usr/local/cuda-12.1"))),
         runtime_env_script=Path(str(values.get("runtime_env_script", "/opt/gs_playground_real2sim_48q/scripts/real2sim_wuying_paper_env.sh"))),
+        motrixsim_docs_root=Path(str(values.get("motrixsim_docs_root", os.environ.get("REAL2SIM_MOTRIXSIM_DOCS_ROOT", "/opt/motrixsim-docs")))),
         allowed_path_roots=_parse_path_tuple(str(values.get("allowed_path_roots", ""))),
         worker_mode=str(values.get("worker_mode", os.environ.get("REAL2SIM_WORKER_MODE", "embedded"))),
         worker_id=str(values.get("worker_id", os.environ.get("REAL2SIM_WORKER_ID", "local-worker"))),
@@ -179,6 +182,7 @@ def write_default_config(path: Path, config: PlatformConfig | None = None) -> No
         f'anysplat_python = "{cfg.anysplat_python.as_posix()}"',
         f'cuda_home = "{cfg.cuda_home.as_posix()}"',
         f'runtime_env_script = "{cfg.runtime_env_script.as_posix()}"',
+        f'motrixsim_docs_root = "{cfg.motrixsim_docs_root.as_posix()}"',
         f'allowed_path_roots = "{_format_path_tuple(cfg.effective_allowed_path_roots)}"',
         f'worker_mode = "{cfg.worker_mode}"',
         f'worker_id = "{cfg.worker_id}"',

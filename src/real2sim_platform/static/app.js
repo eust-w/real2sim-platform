@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260712-motrix-spatial-v4";
+const STATIC_VERSION = "20260712-scene-composition-v1";
 
 const state = {
   datasets: [],
@@ -11,6 +11,7 @@ const state = {
   editing: null,
   assetLibrary: [],
   digitalAssets: [],
+  robots: [],
   refreshTimer: null,
   taskEvents: null,
   selections: {},
@@ -19,6 +20,21 @@ const state = {
   recipes: null,
   initialized: false,
   pendingPassword: "",
+  composition: {
+    baseSceneId: "",
+    robotId: "",
+    robotTransform: null,
+    assets: [],
+    selectedId: "",
+    tool: "select",
+    history: [],
+    future: [],
+    bounds: null,
+    previewSceneId: "",
+    savedSceneId: "",
+    collectionReady: false,
+    pendingTaskId: "",
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +42,7 @@ const $ = (id) => document.getElementById(id);
 const taskScopes = {
   dataTaskList: ["hf_import", "media_prepare"],
   sceneTaskList: ["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"],
+  compositionTaskList: ["scene_composition", "simulator_validation"],
   collectTaskList: ["expert_collection"],
   trainTaskList: ["training"],
   inferTaskList: ["inference"],
@@ -90,6 +107,7 @@ function startTaskEvents() {
     state.tasks = JSON.parse(event.data);
     renderScopedTaskLists();
     renderOverview();
+    renderComposition();
     if (state.selectedTaskId && $("taskDrawer")?.classList.contains("open")) showTask(state.selectedTaskId, { preservePreview: true }).catch(console.warn);
     if (state.tasks.some((task) => terminalStatus(task.status) && !previousTerminal.has(task.id))) refresh({ quiet: true }).catch(console.warn);
   });
@@ -125,18 +143,20 @@ function fillRecipeSelect(id, items, emptyLabel) {
 
 async function refresh({ quiet = false } = {}) {
   try {
-    const [datasets, scenes, models, tasks, digitalAssets] = await Promise.all([
+    const [datasets, scenes, models, tasks, digitalAssets, robots] = await Promise.all([
       api("/api/datasets"),
       api("/api/scenes"),
       api("/api/models"),
       api("/api/tasks"),
       api("/api/assets"),
+      api("/api/robots"),
     ]);
     state.datasets = Array.isArray(datasets) ? datasets : [];
     state.scenes = Array.isArray(scenes) ? scenes : [];
     state.models = Array.isArray(models) ? models : [];
     state.tasks = Array.isArray(tasks) ? tasks : [];
     state.digitalAssets = Array.isArray(digitalAssets) ? digitalAssets : [];
+    state.robots = Array.isArray(robots) ? robots : [];
     if (state.activeSceneId && !state.scenes.some((scene) => scene.id === state.activeSceneId)) {
       state.activeSceneId = "";
     }
@@ -159,6 +179,7 @@ function renderAll() {
   renderDatasetList();
   renderReconstructDatasetCards();
   renderSceneList();
+  renderComposition();
   renderPreflightSummary();
   renderCollectionDatasets();
   renderModelList();
@@ -175,10 +196,11 @@ function updateActionAvailability() {
   setActionAvailability("createMediaPrepare", writable && state.datasets.length > 0, writable ? "请先新增数据集" : "只读用户不能创建任务");
   setActionAvailability("createPreflightTask", writable && preparedDatasets().length > 0, "请先准备帧数据");
   setActionAvailability("createSceneTask", writable && preparedDatasets().length > 0, "请先准备帧数据");
-  setActionAvailability("createCollectTask", writable && state.scenes.length > 0 && Boolean($("policyPreset")?.value), "请先选择兼容真实控制器的场景");
+  setActionAvailability("createCollectTask", writable && collectionReadyScenes().length > 0 && Boolean($("policyPreset")?.value), "请先保存通过运行时校验的 RM65 组合场景");
   setActionAvailability("createTrainTask", writable && collectionDatasets().length > 0 && Boolean($("trainRecipe")?.value), "请先完成真实专家采集并确认 ACT 运行时");
   setActionAvailability("createInferTask", writable && state.models.length > 0 && state.scenes.length > 0, state.models.length ? "请先完成场景重建" : "请先训练模型");
   setActionAvailability("addSceneAsset", writable && state.scenes.length > 0, "请先完成场景重建");
+  setActionAvailability("saveSceneComposition", writable && Boolean(state.composition.baseSceneId && state.composition.robotId), "请先选择基础场景和机器人");
 }
 
 function setActionAvailability(id, enabled, reason) {
@@ -192,16 +214,19 @@ function switchTab(tabId) {
   document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tabId));
   document.querySelectorAll(".page").forEach((page) => page.classList.toggle("active", page.id === tabId));
   refreshSelectionBars();
+  if (tabId === "compose") renderComposition();
 }
 
 function renderSelectors() {
   fillSelect("prepareDataset", state.datasets, "暂无数据集，请先新增");
   fillSelect("reconstructInput", preparedDatasets(), "暂无已准备帧数据，请先在数据管理中准备");
-  fillSelect("collectScene", state.scenes, "暂无场景，请先重建");
+  fillSelect("collectScene", collectionReadyScenes(), "暂无可采集组合场景，请先完成场景组合");
   fillSelect("trainDataset", collectionDatasets(), "暂无采集数据，请先采集");
   fillSelect("inferScene", state.scenes, "暂无场景，请先重建");
   fillSelect("inferModel", state.models, "暂无模型，请先训练");
   fillSelect("assetScene", state.scenes, "暂无场景，请先重建");
+  fillSelect("composeBaseScene", baseCompositionScenes(), "暂无可编辑场景，请先导入或重建");
+  if ($("composeBaseScene") && state.composition.baseSceneId) $("composeBaseScene").value = state.composition.baseSceneId;
   const assetScene = $("assetScene");
   if (assetScene && state.activeSceneId && state.scenes.some((scene) => scene.id === state.activeSceneId)) {
     assetScene.value = state.activeSceneId;
@@ -233,6 +258,7 @@ function renderOverview() {
     ["数据导入", state.datasets.length > 0],
     ["输入准备", state.datasets.some((item) => item.source_type === "prepared_media")],
     ["场景重建", state.scenes.length > 0],
+    ["场景组合", collectionReadyScenes().length > 0],
     ["数据采集", collectionDatasets().length > 0],
     ["模型训练", state.models.length > 0],
     ["在线推理", state.tasks.some((task) => task.type === "inference" && task.status === "succeeded")],
@@ -262,9 +288,10 @@ function nextAction() {
   if (!state.datasets.length) return { index: 0, label: "新增数据", text: "先导入 HuggingFace 样例、上传文件或本地目录。", action: () => switchTab("data") };
   if (!state.datasets.some((item) => item.source_type === "prepared_media")) return { index: 1, label: "准备输入", text: "已有数据集，下一步是抽帧并生成 prepared frames。", action: () => switchTab("data") };
   if (!state.scenes.length) return { index: 2, label: "开始重建", text: "已有准备数据，建议先预检，再启动真实重建。", action: () => switchTab("reconstruct") };
-  if (!collectionDatasets().length) return { index: 3, label: "采集数据", text: "已有场景，可用专家策略采集训练数据。", action: () => switchTab("collect") };
-  if (!state.models.length) return { index: 4, label: "训练模型", text: "已有采集数据，可训练策略模型。", action: () => switchTab("train") };
-  return { index: 5, label: "运行推理", text: "闭环资源已就绪，可以选择模型和场景在线推理。", action: () => switchTab("infer") };
+  if (!collectionReadyScenes().length) return { index: 3, label: "组合场景", text: "在重建场景中加入 RM65、任务资产和 MotrixSim 物理属性。", action: () => switchTab("compose") };
+  if (!collectionDatasets().length) return { index: 4, label: "采集数据", text: "组合场景已通过运行时校验，可以启动真实专家采集。", action: () => switchTab("collect") };
+  if (!state.models.length) return { index: 5, label: "训练模型", text: "已有采集数据，可训练策略模型。", action: () => switchTab("train") };
+  return { index: 6, label: "运行推理", text: "闭环资源已就绪，可以选择模型和场景在线推理。", action: () => switchTab("infer") };
 }
 
 function renderDatasetList() {
@@ -325,6 +352,373 @@ function renderSceneList() {
     ],
   })).join("");
   setHtml("sceneList", rows || emptyState("暂无场景，请先在“场景重建”中创建。"));
+}
+
+function baseCompositionScenes() {
+  return state.scenes.filter((scene) => scene?.metadata?.editable !== false);
+}
+
+function collectionReadyScenes() {
+  return state.scenes.filter((scene) => scene?.metadata?.collection_ready || (scene.tags || []).includes("collection-ready"));
+}
+
+function ensureCompositionDraft() {
+  const draft = state.composition;
+  const scenes = baseCompositionScenes();
+  if (!scenes.some((scene) => scene.id === draft.baseSceneId)) {
+    draft.baseSceneId = scenes[0]?.id || "";
+    draft.bounds = null;
+    draft.previewSceneId = "";
+  }
+  if (!state.robots.some((robot) => robot.id === draft.robotId)) {
+    const robot = state.robots[0];
+    draft.robotId = robot?.id || "";
+    draft.robotTransform = robot ? cloneValue(robot.default_transform) : null;
+  }
+  const validIds = new Set([`robot:${draft.robotId}`, ...draft.assets.map((asset) => asset.instance_id)]);
+  if (!validIds.has(draft.selectedId)) draft.selectedId = draft.robotId ? `robot:${draft.robotId}` : draft.assets[0]?.instance_id || "";
+}
+
+function renderComposition() {
+  if (!$("composeRobotList")) return;
+  ensureCompositionDraft();
+  const draft = state.composition;
+  const baseScene = state.scenes.find((scene) => scene.id === draft.baseSceneId);
+  const baseSelect = $("composeBaseScene");
+  if (baseSelect && baseScene) baseSelect.value = baseScene.id;
+
+  setHtml("composeRobotList", state.robots.map((robot) => `
+    <button class="composition-resource-card ${robot.id === draft.robotId ? "active" : ""}" type="button" draggable="true" data-compose-robot="${escapeAttr(robot.id)}">
+      <span class="resource-mark">RM65</span>
+      <span><strong>${escapeHtml(robot.name)}</strong><span>${escapeHtml(robot.description || "MotrixSim 机器人")}</span><em>${robot.id === draft.robotId ? "已加入场景" : "拖入场景"}</em></span>
+    </button>`).join("") || emptyState("暂无已注册机器人。"));
+
+  const visibleAssets = state.digitalAssets.filter((asset) => asset.source_type === "recipe" || asset.source_type === "primitive" || asset.capabilities?.browser_preview).slice(0, 30);
+  setHtml("composeAssetList", visibleAssets.map((asset) => {
+    const inScene = draft.assets.some((item) => item.catalog_id === asset.id);
+    return `<button class="composition-asset-card" type="button" draggable="true" data-compose-catalog="${escapeAttr(asset.id)}" data-in-scene="${inScene}">
+      <span><strong>${escapeHtml(asset.name)}</strong><span>${escapeHtml(asset.description || compositionAssetDescription(asset))}</span></span>
+      <em>${inScene && asset.source_type === "recipe" ? "已在场景中" : "拖入场景"}</em>
+    </button>`;
+  }).join("") || emptyState("暂无可用于组合的数字资产。"));
+
+  const hierarchy = [
+    baseScene ? { id: "base-scene", name: resourceDisplayName(baseScene), type: "基础场景", removable: false } : null,
+    draft.robotId ? { id: `robot:${draft.robotId}`, name: state.robots.find((robot) => robot.id === draft.robotId)?.name || draft.robotId, type: "机器人", removable: true } : null,
+    ...draft.assets.map((asset) => ({ id: asset.instance_id, name: asset.name, type: compositionAssetType(asset), removable: true })),
+  ].filter(Boolean);
+  setText("compositionObjectCount", `${hierarchy.length} 个对象`);
+  setHtml("compositionHierarchy", hierarchy.map((item) => `
+    <div class="composition-tree-row ${item.id === draft.selectedId ? "active" : ""}" data-compose-select="${escapeAttr(item.id)}">
+      <strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.type)}</span>${item.removable ? `<button class="danger-button" type="button" data-compose-remove="${escapeAttr(item.id)}">移除</button>` : "<span></span>"}
+    </div>`).join("") || emptyState("先选择基础场景和机器人。"));
+
+  renderCompositionInspector();
+  renderCompositionPreview(baseScene);
+  const requiredReady = ["recipe:coffee_table", "recipe:pick_cube", "recipe:place_target"].every((id) => draft.assets.some((asset) => asset.catalog_id === id));
+  const pending = state.tasks.find((task) => task.id === draft.pendingTaskId);
+  if (pending?.status === "succeeded" && pending.result?.scene_id) {
+    draft.savedSceneId = pending.result.scene_id;
+    draft.collectionReady = Boolean(pending.result.collection_ready);
+    draft.pendingTaskId = "";
+  }
+  const savedScene = state.scenes.find((scene) => scene.id === draft.savedSceneId);
+  const motrixReady = Boolean(state.capabilities?.runtimes?.motrixsim?.ready);
+  setHtml("composeCompatibility", `
+    <strong>${motrixReady ? "MotrixSim 运行时已就绪" : "MotrixSim 运行时不可用"}</strong>
+    <span>RM65：${draft.robotId ? "已加入" : "未选择"}</span>
+    <span>采集对象：${requiredReady ? "茶几、抓取方块、放置目标齐全" : "还需加入茶几、抓取方块和放置目标"}</span>
+    <span>保存状态：${savedScene ? `已生成 ${escapeHtml(resourceDisplayName(savedScene))}` : pending ? escapeHtml(statusLabel(pending.status)) : "尚未保存"}</span>`);
+  setText("composeStageStatus", baseScene ? `${resourceDisplayName(baseScene)} · ${draft.assets.length} 个数字资产 · ${draft.robotId ? "RM65 已加入" : "未选择机器人"}` : "等待基础场景");
+  setActionAvailability("saveSceneComposition", state.user?.role !== "viewer" && Boolean(baseScene && draft.robotId && motrixReady), motrixReady ? "请先选择基础场景和机器人" : "MotrixSim worker 尚未就绪");
+  setActionAvailability("testSceneComposition", Boolean(savedScene), "请先保存并等待组合场景通过运行时校验");
+  setActionAvailability("collectSceneComposition", Boolean(savedScene && draft.collectionReady), "组合场景需包含茶几、抓取方块和放置目标并通过校验");
+}
+
+function renderCompositionPreview(baseScene) {
+  const iframe = $("compositionPreview");
+  if (!iframe) return;
+  if (!baseScene) {
+    iframe.removeAttribute("src");
+    return;
+  }
+  if (state.composition.previewSceneId !== baseScene.id || !iframe.src.includes(STATIC_VERSION)) {
+    state.composition.previewSceneId = baseScene.id;
+    iframe.src = `/static/scene-viewer.html?v=${STATIC_VERSION}&embedded=1&composer=1&scene_id=${encodeURIComponent(baseScene.id)}`;
+    iframe.onload = () => postCompositionDraft();
+    loadCompositionBounds(baseScene.id).catch((error) => console.warn(error));
+  } else {
+    postCompositionDraft();
+  }
+}
+
+async function loadCompositionBounds(sceneId) {
+  const manifest = await api(`/api/scenes/${encodeURIComponent(sceneId)}/manifest`);
+  if (state.composition.baseSceneId !== sceneId) return;
+  const min = Array.isArray(manifest.bounds_m?.min) ? manifest.bounds_m.min.map(Number) : [];
+  const max = Array.isArray(manifest.bounds_m?.max) ? manifest.bounds_m.max.map(Number) : [];
+  state.composition.bounds = min.length === 3 && max.length === 3 && [...min, ...max].every(Number.isFinite) ? { min, max } : null;
+}
+
+function postCompositionDraft() {
+  const iframe = $("compositionPreview");
+  if (!iframe?.contentWindow) return;
+  const draft = state.composition;
+  const robot = state.robots.find((item) => item.id === draft.robotId);
+  const robotPayload = robot ? {
+    ...robot,
+    instance_id: `robot:${robot.id}`,
+    role: "robot",
+    kind: "robot",
+    name: "rm65.glb",
+    url: robot.preview_url,
+    transform: cloneValue(draft.robotTransform),
+  } : null;
+  const assets = draft.assets.map((instance) => {
+    const catalog = state.digitalAssets.find((item) => item.id === instance.catalog_id) || {};
+    const components = Array.isArray(catalog.components) ? catalog.components.map((component) => ({
+      name: component.name,
+      viewer_primitive: component.primitive,
+      translation: component.position || [0, 0, 0],
+      rotation_euler_degrees: component.rotation_euler_degrees || [0, 0, 0],
+      dimensions: component.dimensions || catalog.physics?.dimensions || [0.1, 0.1, 0.1],
+      rgba: component.rgba || catalog.physics?.rgba || [0.13, 0.76, 0.67, 1],
+    })) : [];
+    return {
+      ...catalog,
+      ...cloneValue(instance),
+      role: "composition_draft",
+      url: catalog.preview_url || catalog.url || "",
+      viewer_primitive: components.length === 1 ? components[0].viewer_primitive : catalog.viewer_primitive,
+      viewer_components: components,
+    };
+  });
+  iframe.contentWindow.postMessage({
+    type: "real2sim-composition-draft",
+    robot: robotPayload,
+    assets,
+    selected_id: draft.selectedId,
+    tool: draft.tool,
+  }, location.origin);
+}
+
+function selectedCompositionObject() {
+  const draft = state.composition;
+  if (draft.selectedId === `robot:${draft.robotId}`) {
+    const robot = state.robots.find((item) => item.id === draft.robotId);
+    return robot ? { type: "robot", id: draft.selectedId, name: robot.name, transform: draft.robotTransform, robot } : null;
+  }
+  const asset = draft.assets.find((item) => item.instance_id === draft.selectedId);
+  return asset ? { type: "asset", id: asset.instance_id, name: asset.name, transform: asset.transform, physics: asset.physics, asset } : null;
+}
+
+function renderCompositionInspector() {
+  const selected = selectedCompositionObject();
+  setHtml("compositionSelection", selected
+    ? `<strong>${escapeHtml(selected.name)}</strong><span>${selected.type === "robot" ? "RM65 机器人 · 关节与惯性保持标定尺度" : escapeHtml(compositionAssetType(selected.asset))}</span>`
+    : "选择画布或层级中的对象");
+  const transform = selected?.transform || { translation: [0, 0, 0], rotation_euler_degrees: [0, 0, 0], scale: [1, 1, 1] };
+  const values = {
+    composePosX: transform.translation?.[0] ?? 0,
+    composePosY: transform.translation?.[1] ?? 0,
+    composePosZ: transform.translation?.[2] ?? 0,
+    composeRotX: transform.rotation_euler_degrees?.[0] ?? 0,
+    composeRotY: transform.rotation_euler_degrees?.[1] ?? 0,
+    composeRotZ: transform.rotation_euler_degrees?.[2] ?? 0,
+    composeScaleX: transform.scale?.[0] ?? 1,
+    composeScaleY: transform.scale?.[1] ?? 1,
+    composeScaleZ: transform.scale?.[2] ?? 1,
+    composeMass: selected?.physics?.mass ?? selected?.robot?.payload_kg ?? 0,
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const input = $(id);
+    if (input && document.activeElement !== input) input.value = Number(value).toFixed(id.startsWith("composeRot") ? 1 : 3);
+  });
+  if ($("composeDynamic")) $("composeDynamic").checked = Boolean(selected?.physics?.dynamic);
+  if ($("composeCollision")) $("composeCollision").value = selected?.physics?.collision_mode || "visual_and_collision";
+  const disabled = !selected;
+  ["composePosX", "composePosY", "composePosZ", "composeRotX", "composeRotY", "composeRotZ"].forEach((id) => { if ($(id)) $(id).disabled = disabled; });
+  ["composeScaleX", "composeScaleY", "composeScaleZ", "composeDynamic", "composeMass", "composeCollision"].forEach((id) => { if ($(id)) $(id).disabled = disabled || selected?.type === "robot"; });
+  if ($("removeCompositionObject")) $("removeCompositionObject").disabled = !selected;
+}
+
+function compositionAssetDescription(asset) {
+  if (asset.source_type === "primitive") return `${sourceTypeLabel(asset.format)} · 可设置碰撞和动态属性`;
+  if (asset.source_type === "dataset") return `${asset.dataset_name || "数据集"} · ${String(asset.format || "mesh").toUpperCase()}`;
+  return "MotrixSim 数字资产";
+}
+
+function compositionAssetType(asset) {
+  const catalog = state.digitalAssets.find((item) => item.id === asset?.catalog_id);
+  if (catalog?.source_type === "recipe") return catalog.category === "task_object" ? "动态任务物体" : catalog.category === "task_marker" ? "任务目标" : "组合资产";
+  return catalog?.source_type === "dataset" ? "已导入网格" : "基础几何";
+}
+
+function cloneValue(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function compositionSnapshot() {
+  const draft = state.composition;
+  return cloneValue({ robotId: draft.robotId, robotTransform: draft.robotTransform, assets: draft.assets, selectedId: draft.selectedId });
+}
+
+function pushCompositionHistory() {
+  const draft = state.composition;
+  draft.history.push(compositionSnapshot());
+  if (draft.history.length > 40) draft.history.shift();
+  draft.future = [];
+}
+
+function restoreCompositionSnapshot(snapshot) {
+  if (!snapshot) return;
+  Object.assign(state.composition, cloneValue(snapshot), { savedSceneId: "", collectionReady: false, pendingTaskId: "" });
+  renderComposition();
+}
+
+function markCompositionDirty() {
+  Object.assign(state.composition, { savedSceneId: "", collectionReady: false, pendingTaskId: "" });
+}
+
+function addCompositionAsset(catalogId, position = null, { record = true } = {}) {
+  const catalog = state.digitalAssets.find((asset) => asset.id === catalogId);
+  if (!catalog) return toast("所选数字资产已不在资源目录中");
+  if (catalog.source_type === "recipe") {
+    const existing = state.composition.assets.find((asset) => asset.catalog_id === catalogId);
+    if (existing) {
+      state.composition.selectedId = existing.instance_id;
+      renderComposition();
+      return toast("该任务资产已在场景中，可直接调整位置");
+    }
+  }
+  if (record) pushCompositionHistory();
+  const transform = cloneValue(catalog.default_transform || { translation: [0, 0, 0.1], rotation_euler_degrees: [0, 0, 0], scale: [1, 1, 1] });
+  if (position) {
+    transform.translation[0] = position[0];
+    transform.translation[1] = position[1];
+  }
+  const instance = {
+    catalog_id: catalog.id,
+    instance_id: `asset_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    name: catalog.name,
+    source: cloneValue(catalog.source || {}),
+    transform,
+    physics: cloneValue(catalog.physics || { dynamic: false, mass: 0.25, collision_mode: "visual_and_collision", dimensions: [0.1, 0.1, 0.1] }),
+  };
+  state.composition.assets.push(instance);
+  state.composition.selectedId = instance.instance_id;
+  markCompositionDirty();
+  renderComposition();
+}
+
+function compositionDropPosition(event) {
+  const bounds = state.composition.bounds;
+  const catalog = state.digitalAssets.find((asset) => asset.id === document.body.dataset.compositionCatalog);
+  const fallback = cloneValue(catalog?.default_transform?.translation || [0, 0, 0.1]);
+  if (!bounds) return fallback;
+  const rect = $("compositionDropOverlay").getBoundingClientRect();
+  const nx = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+  const ny = Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height)));
+  const width = Math.min(6, Math.max(0.4, bounds.max[0] - bounds.min[0]));
+  const depth = Math.min(6, Math.max(0.4, bounds.max[1] - bounds.min[1]));
+  const centerX = (bounds.min[0] + bounds.max[0]) / 2;
+  const centerY = (bounds.min[1] + bounds.max[1]) / 2;
+  return [centerX + (0.5 - ny) * width * 0.7, centerY + (nx - 0.5) * depth * 0.7, fallback[2]];
+}
+
+function selectCompositionObject(id) {
+  state.composition.selectedId = id;
+  renderComposition();
+}
+
+function removeCompositionObject(id = state.composition.selectedId) {
+  if (!id) return;
+  pushCompositionHistory();
+  if (id.startsWith("robot:")) {
+    state.composition.robotId = "";
+    state.composition.robotTransform = null;
+  } else {
+    state.composition.assets = state.composition.assets.filter((asset) => asset.instance_id !== id);
+  }
+  state.composition.selectedId = state.composition.robotId ? `robot:${state.composition.robotId}` : state.composition.assets[0]?.instance_id || "";
+  markCompositionDirty();
+  renderComposition();
+}
+
+function updateSelectedCompositionFromForm() {
+  const selected = selectedCompositionObject();
+  if (!selected) return;
+  pushCompositionHistory();
+  selected.transform.translation = [Number($("composePosX").value), Number($("composePosY").value), Number($("composePosZ").value)];
+  selected.transform.rotation_euler_degrees = [Number($("composeRotX").value), Number($("composeRotY").value), Number($("composeRotZ").value)];
+  if (selected.type !== "robot") {
+    selected.transform.scale = [Number($("composeScaleX").value), Number($("composeScaleY").value), Number($("composeScaleZ").value)];
+    selected.physics.dynamic = Boolean($("composeDynamic").checked);
+    selected.physics.mass = Number($("composeMass").value);
+    selected.physics.collision_mode = $("composeCollision").value;
+  }
+  markCompositionDirty();
+  renderComposition();
+}
+
+function loadPickPlacePreset() {
+  pushCompositionHistory();
+  for (const catalog of state.digitalAssets.filter((asset) => asset.source_type === "recipe" && asset.required_for_collection)) {
+    if (!state.composition.assets.some((asset) => asset.catalog_id === catalog.id)) addCompositionAsset(catalog.id, null, { record: false });
+  }
+  markCompositionDirty();
+  renderComposition();
+}
+
+async function saveSceneComposition() {
+  const draft = state.composition;
+  if (!draft.baseSceneId || !draft.robotId) return toast("请先选择基础场景和机器人");
+  const name = $("compositionName")?.value.trim() || "RM65 组合场景";
+  setBusy(true, "正在创建 MotrixSim 场景组合任务");
+  try {
+    const result = await api(`/api/scenes/${encodeURIComponent(draft.baseSceneId)}/compose`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        robot: { robot_id: draft.robotId, transform: cloneValue(draft.robotTransform) },
+        assets: draft.assets.map((asset) => ({
+          catalog_id: asset.catalog_id,
+          instance_id: asset.instance_id,
+          name: asset.name,
+          source: cloneValue(asset.source || {}),
+          transform: cloneValue(asset.transform),
+          physics: cloneValue(asset.physics || {}),
+        })),
+        validation_steps: 120,
+      }),
+    });
+    draft.pendingTaskId = result.task.id;
+    draft.savedSceneId = "";
+    draft.collectionReady = false;
+    state.selectedTaskId = result.task.id;
+    toast("组合任务已创建，正在执行真实 MotrixSim 校验");
+    await refresh({ quiet: true });
+    showTask(result.task.id).catch((error) => toast(error.message));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function testSceneComposition() {
+  const sceneId = state.composition.savedSceneId;
+  if (!sceneId) return toast("请先保存组合场景");
+  await createTask("simulator_validation", { scene_id: sceneId, simulators: ["mujoco", "motrixsim"], level: "runtime_required" });
+  switchTab("compose");
+}
+
+function collectSceneComposition() {
+  const sceneId = state.composition.savedSceneId;
+  if (!sceneId || !state.composition.collectionReady) return toast("该组合场景尚未满足采集对象约定");
+  switchTab("collect");
+  renderSelectors();
+  if ($("collectScene")) $("collectScene").value = sceneId;
+  toast("已选择组合场景，可配置 Episode 数后开始采集");
 }
 
 function renderPreflightSummary() {
@@ -1091,7 +1485,7 @@ function collectionDatasets() {
 }
 
 function sceneIdFromTask(task) {
-  return ["scene_reconstruction", "motrixsim_scene_import", "scene_asset_compose"].includes(task?.type) ? task.result?.scene_id || "" : "";
+  return ["scene_reconstruction", "motrixsim_scene_import", "scene_asset_compose", "scene_composition"].includes(task?.type) ? task.result?.scene_id || "" : "";
 }
 
 function resourceView(kind, item) {
@@ -1187,7 +1581,7 @@ function taskSubtitle(task) {
 function taskProgress(task) {
   if (task.status === "succeeded") return 100;
   if (Number.isFinite(Number(task.progress))) return Math.max(0, Math.min(100, Number(task.progress)));
-  return { succeeded: 100, running: 50, queued: 8, canceling: 45 }[task.status] || 0;
+  return 0;
 }
 
 function taskStage(task) {
@@ -1205,6 +1599,7 @@ function taskTypeLabel(type) {
     motrixsim_asset_import: "MotrixSim 资产导入",
     motrixsim_scene_import: "MotrixSim 场景包导入",
     scene_asset_compose: "数字资产合成",
+    scene_composition: "场景组合",
     simulator_validation: "仿真校验",
     renderer_benchmark: "渲染器对比",
     scene_cover_render: "场景封面",
@@ -1253,6 +1648,9 @@ function sourceTypeLabel(type) {
     scene_reconstruction: "场景重建",
     motrixsim_spatial_bundle: "MotrixSim 空间包",
     scene_revision: "场景修订",
+    scene_composition: "场景组合",
+    recipe: "任务资产配方",
+    primitive: "基础几何",
     training: "训练模型",
     inference: "推理结果",
     splat_or_pointcloud: "点云 / Splat",
@@ -1377,7 +1775,7 @@ function assetPriority(asset) {
 }
 
 function assetRoleLabel(role) {
-  return ({ added_asset: "新增资产", collision: "碰撞体", visual: "可视化", texture: "纹理", simulator_import: "仿真导入", package: "场景包", source: "来源资产" })[role] || role;
+  return ({ robot: "机器人", added_asset: "新增资产", collision: "碰撞体", visual: "可视化", texture: "纹理", simulator_import: "仿真导入", package: "场景包", source: "来源资产" })[role] || role;
 }
 
 function bulkMessage(result, label) {
@@ -1396,6 +1794,7 @@ function exportSummary(payload = {}) {
 
 function switchTaskPage(type) {
   if (["hf_import", "media_prepare"].includes(type)) switchTab("data");
+  else if (type === "scene_composition") switchTab("compose");
   else if (["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"].includes(type)) switchTab("reconstruct");
   else if (type === "expert_collection") switchTab("collect");
   else if (type === "training") switchTab("train");
@@ -1599,6 +1998,43 @@ function bindEvents() {
   $("reconstructInput")?.addEventListener("change", () => {
     renderReconstructDatasetCards();
   });
+  $("composeBaseScene")?.addEventListener("change", () => {
+    pushCompositionHistory();
+    state.composition.baseSceneId = $("composeBaseScene").value;
+    state.composition.bounds = null;
+    state.composition.previewSceneId = "";
+    markCompositionDirty();
+    renderComposition();
+  });
+  $("loadPickPlacePreset")?.addEventListener("click", loadPickPlacePreset);
+  $("saveSceneComposition")?.addEventListener("click", saveSceneComposition);
+  $("testSceneComposition")?.addEventListener("click", testSceneComposition);
+  $("collectSceneComposition")?.addEventListener("click", collectSceneComposition);
+  $("removeCompositionObject")?.addEventListener("click", () => removeCompositionObject());
+  ["composePosX", "composePosY", "composePosZ", "composeRotX", "composeRotY", "composeRotZ", "composeScaleX", "composeScaleY", "composeScaleZ", "composeDynamic", "composeMass", "composeCollision"].forEach((id) => {
+    $(id)?.addEventListener("change", updateSelectedCompositionFromForm);
+  });
+  $("composeUndo")?.addEventListener("click", () => {
+    const snapshot = state.composition.history.pop();
+    if (!snapshot) return toast("没有可撤销的操作");
+    state.composition.future.push(compositionSnapshot());
+    restoreCompositionSnapshot(snapshot);
+  });
+  $("composeRedo")?.addEventListener("click", () => {
+    const snapshot = state.composition.future.pop();
+    if (!snapshot) return toast("没有可重做的操作");
+    state.composition.history.push(compositionSnapshot());
+    restoreCompositionSnapshot(snapshot);
+  });
+  $("compositionDropOverlay")?.addEventListener("dragover", (event) => event.preventDefault());
+  $("compositionDropOverlay")?.addEventListener("drop", (event) => {
+    event.preventDefault();
+    const catalogId = document.body.dataset.compositionCatalog;
+    const robotId = document.body.dataset.compositionRobot;
+    if (catalogId) addCompositionAsset(catalogId, compositionDropPosition(event));
+    if (robotId) selectCompositionRobot(robotId, compositionDropPosition(event));
+    clearCompositionDrag();
+  });
 
   $("createMediaPrepare")?.addEventListener("click", async () => {
     const datasetId = $("prepareDataset")?.value || state.datasets[0]?.id;
@@ -1649,8 +2085,8 @@ function bindEvents() {
   });
 
   $("createCollectTask")?.addEventListener("click", async () => {
-    const sceneId = $("collectScene")?.value || state.scenes[0]?.id;
-    if (!sceneId) return toast("请先完成场景重建。");
+    const sceneId = $("collectScene")?.value || collectionReadyScenes()[0]?.id;
+    if (!sceneId) return toast("请先保存满足 RM65 控制器约定的组合场景。");
     await createTask("expert_collection", {
       scene_id: sceneId,
       policy_preset: $("policyPreset")?.value,
@@ -1692,10 +2128,93 @@ function bindEvents() {
     }
   });
 
+  document.body.addEventListener("dragstart", (event) => {
+    const asset = event.target.closest("[data-compose-catalog]");
+    const robot = event.target.closest("[data-compose-robot]");
+    if (!asset && !robot) return;
+    document.body.dataset.compositionCatalog = asset?.dataset.composeCatalog || "";
+    document.body.dataset.compositionRobot = robot?.dataset.composeRobot || "";
+    document.body.classList.add("composition-dragging");
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("text/plain", asset?.dataset.composeCatalog || robot?.dataset.composeRobot || "real2sim-resource");
+  });
+  document.body.addEventListener("dragend", clearCompositionDrag);
+
   document.body.addEventListener("click", handleBodyClick);
+  window.addEventListener("message", handleCompositionViewerMessage);
+}
+
+function clearCompositionDrag() {
+  document.body.classList.remove("composition-dragging");
+  delete document.body.dataset.compositionCatalog;
+  delete document.body.dataset.compositionRobot;
+}
+
+function selectCompositionRobot(robotId, position = null) {
+  const robot = state.robots.find((item) => item.id === robotId);
+  if (!robot) return toast("机器人已不在资源目录中");
+  pushCompositionHistory();
+  state.composition.robotId = robot.id;
+  state.composition.robotTransform = cloneValue(robot.default_transform);
+  if (position) {
+    state.composition.robotTransform.translation[0] = position[0];
+    state.composition.robotTransform.translation[1] = position[1];
+  }
+  state.composition.selectedId = `robot:${robot.id}`;
+  markCompositionDirty();
+  renderComposition();
+}
+
+function handleCompositionViewerMessage(event) {
+  const iframe = $("compositionPreview");
+  if (event.origin !== location.origin || event.source !== iframe?.contentWindow || !event.data) return;
+  const payload = event.data;
+  if (payload.type === "real2sim-composition-selected") {
+    state.composition.selectedId = String(payload.instance_id || "");
+    renderCompositionInspector();
+    return;
+  }
+  if (payload.type === "real2sim-composition-transform-start") {
+    pushCompositionHistory();
+    return;
+  }
+  if (payload.type === "real2sim-composition-transform") {
+    const id = String(payload.instance_id || "");
+    const transform = cloneValue(payload.transform || {});
+    if (id === `robot:${state.composition.robotId}`) state.composition.robotTransform = transform;
+    else {
+      const asset = state.composition.assets.find((item) => item.instance_id === id);
+      if (asset) asset.transform = transform;
+    }
+    state.composition.selectedId = id;
+    markCompositionDirty();
+    renderCompositionInspector();
+    setText("composeStageStatus", "对象位置已更新，保存后将写入 MotrixSim MJCF");
+    return;
+  }
+  if (payload.type === "real2sim-composition-transform-end") renderComposition();
 }
 
 async function handleBodyClick(event) {
+  const composeRobot = event.target.closest("[data-compose-robot]");
+  if (composeRobot) selectCompositionRobot(composeRobot.dataset.composeRobot);
+
+  const composeCatalog = event.target.closest("[data-compose-catalog]");
+  if (composeCatalog) addCompositionAsset(composeCatalog.dataset.composeCatalog);
+
+  const composeSelect = event.target.closest("[data-compose-select]");
+  if (composeSelect && !event.target.closest("button")) selectCompositionObject(composeSelect.dataset.composeSelect);
+
+  const composeRemove = event.target.closest("[data-compose-remove]");
+  if (composeRemove) removeCompositionObject(composeRemove.dataset.composeRemove);
+
+  const composeTool = event.target.closest("[data-compose-tool]");
+  if (composeTool) {
+    state.composition.tool = composeTool.dataset.composeTool;
+    document.querySelectorAll("[data-compose-tool]").forEach((button) => button.classList.toggle("active", button === composeTool));
+    postCompositionDraft();
+  }
+
   const closeDialog = event.target.closest("[data-close-dialog]");
   if (closeDialog) $(closeDialog.dataset.closeDialog)?.close();
 

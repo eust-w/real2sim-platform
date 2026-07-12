@@ -72,10 +72,11 @@
     const params = new URLSearchParams(location.search);
     const sceneId = params.get("scene_id");
     const embeddedMode = params.get("embedded") === "1";
+    const composerMode = params.get("composer") === "1";
     const coverMode = params.get("cover") === "1";
     const coverView = params.get("cover_view") || "hero";
     const probeFull = params.get("probe_full") === "1";
-    if (coverMode) document.getElementById("hud").style.display = "none";
+    if (coverMode || composerMode) document.getElementById("hud").style.display = "none";
     setupHudPanel();
     if (embeddedMode || innerWidth <= 640) setHudCollapsed(true);
     const nativeWarn = console.warn.bind(console);
@@ -118,6 +119,11 @@
 
     let loadedObject = null;
     let overlayObjects = [];
+    const draftObjects = new Map();
+    let selectedDraftId = "";
+    let selectionHelper = null;
+    let composerTool = "select";
+    let compositionDrag = null;
     let manifestAssets = [];
     let manifestBounds = null;
     let sourceUpAxis = "Z";
@@ -136,6 +142,7 @@
     };
     window.real2simViewerDebug = debug;
     window.real2simViewerDebug.snapshot = () => ({ ...debug, canvas: { ...debug.canvas } });
+    if (composerMode) setupCompositionEditor();
 
     function setupHudPanel() {
       let drag = null;
@@ -224,7 +231,7 @@
           return;
         }
         const selected = assets[Number(button.dataset.index)];
-        if (selected?.role === "added_asset") {
+        if (["added_asset", "robot"].includes(selected?.role)) {
           status.textContent = `已添加资产 · ${selected.name || "asset"} · 与 MotrixSim 场景使用同一坐标`;
           return;
         }
@@ -528,7 +535,7 @@
     async function loadSceneOverlays(assets) {
       clearOverlays();
       if (!loadedObject) return;
-      const overlays = assets.filter((asset) => asset?.role === "added_asset");
+      const overlays = assets.filter((asset) => ["added_asset", "robot"].includes(asset?.role));
       for (const asset of overlays) {
         try {
           const object = await createOverlayObject(asset);
@@ -548,9 +555,44 @@
     }
 
     async function createOverlayObject(asset) {
+      if (Array.isArray(asset.viewer_components) && asset.viewer_components.length) {
+        const group = new THREE.Group();
+        for (const component of asset.viewer_components) {
+          const child = createPrimitiveObject(
+            String(component.viewer_primitive || "box").toLowerCase(),
+            Array.isArray(component.dimensions) ? component.dimensions.map(Number) : [0.1, 0.1, 0.1],
+            Array.isArray(component.rgba) ? component.rgba.map(Number) : [0.13, 0.76, 0.67, 1],
+          );
+          if (!child) continue;
+          const translation = Array.isArray(component.translation) ? component.translation.map(Number) : [0, 0, 0];
+          const rotation = Array.isArray(component.rotation_euler_degrees) ? component.rotation_euler_degrees.map(Number) : [0, 0, 0];
+          child.position.set(translation[0] || 0, translation[1] || 0, translation[2] || 0);
+          child.rotation.set(THREE.MathUtils.degToRad(rotation[0] || 0), THREE.MathUtils.degToRad(rotation[1] || 0), THREE.MathUtils.degToRad(rotation[2] || 0));
+          group.add(child);
+        }
+        return group;
+      }
       const primitive = String(asset.viewer_primitive || "").toLowerCase();
       const dimensions = Array.isArray(asset.physics?.dimensions) ? asset.physics.dimensions.map(Number) : [0.1, 0.1, 0.1];
       const rgba = Array.isArray(asset.physics?.rgba) ? asset.physics.rgba.map(Number) : [0.13, 0.76, 0.67, 1];
+      const primitiveObject = createPrimitiveObject(primitive, dimensions, rgba);
+      if (primitiveObject) return primitiveObject;
+      if (!asset.url) return null;
+      const suffix = String(asset.name || asset.path || asset.url || "").toLowerCase().split("?")[0].split(".").pop();
+      if (suffix === "glb" || suffix === "gltf") {
+        const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+        return (await new GLTFLoader().loadAsync(asset.url)).scene;
+      }
+      if (suffix === "obj") return new OBJLoader().loadAsync(asset.url);
+      if (suffix === "ply") {
+        const geometry = await new PLYLoader().loadAsync(asset.url);
+        geometry.computeVertexNormals();
+        return new THREE.Mesh(geometry, material);
+      }
+      return null;
+    }
+
+    function createPrimitiveObject(primitive, dimensions, rgba) {
       const material = new THREE.MeshStandardMaterial({
         color: new THREE.Color(rgba[0], rgba[1], rgba[2]),
         transparent: rgba[3] < 1,
@@ -580,18 +622,6 @@
         group.add(first, second);
         return group;
       }
-      if (!asset.url) return null;
-      const suffix = String(asset.name || asset.path || "").toLowerCase().split(".").pop();
-      if (suffix === "glb" || suffix === "gltf") {
-        const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
-        return (await new GLTFLoader().loadAsync(asset.url)).scene;
-      }
-      if (suffix === "obj") return new OBJLoader().loadAsync(asset.url);
-      if (suffix === "ply") {
-        const geometry = await new PLYLoader().loadAsync(asset.url);
-        geometry.computeVertexNormals();
-        return new THREE.Mesh(geometry, material);
-      }
       return null;
     }
 
@@ -608,6 +638,158 @@
       for (const object of overlayObjects) contentRoot.remove(object);
       overlayObjects = [];
       debug.overlayCount = 0;
+    }
+
+    function setupCompositionEditor() {
+      const raycaster = new THREE.Raycaster();
+      const pointer = new THREE.Vector2();
+      const dragPlane = new THREE.Plane();
+
+      addEventListener("message", (event) => {
+        if (event.origin !== location.origin || event.data?.type !== "real2sim-composition-draft") return;
+        composerTool = ["select", "move", "rotate", "scale"].includes(event.data.tool) ? event.data.tool : "select";
+        loadCompositionDraft(event.data).catch((error) => console.error("Unable to load composition draft", error));
+      });
+
+      renderer.domElement.addEventListener("pointerdown", (event) => {
+        const hit = compositionHit(event, raycaster, pointer);
+        if (!hit) return;
+        selectDraftObject(hit.userData.compositionInstanceId, true);
+        if (composerTool === "select") return;
+        const object = draftObjects.get(hit.userData.compositionInstanceId);
+        if (!object) return;
+        compositionDrag = {
+          instanceId: hit.userData.compositionInstanceId,
+          object,
+          startX: event.clientX,
+          startY: event.clientY,
+          transform: cloneTransform(object.userData.compositionTransform),
+        };
+        if (composerTool === "move") {
+          contentRoot.updateMatrixWorld(true);
+          const localPoint = new THREE.Vector3(0, 0, Number(compositionDrag.transform.translation?.[2] || 0)).applyMatrix4(contentRoot.matrixWorld);
+          const normal = new THREE.Vector3(0, 0, 1).transformDirection(contentRoot.matrixWorld);
+          dragPlane.setFromNormalAndCoplanarPoint(normal, localPoint);
+        }
+        controls.enabled = false;
+        renderer.domElement.setPointerCapture(event.pointerId);
+        parent.postMessage({ type: "real2sim-composition-transform-start", instance_id: compositionDrag.instanceId }, location.origin);
+        event.preventDefault();
+      });
+
+      renderer.domElement.addEventListener("pointermove", (event) => {
+        if (!compositionDrag) return;
+        const transform = cloneTransform(compositionDrag.transform);
+        if (composerTool === "move") {
+          setPointer(event, pointer);
+          raycaster.setFromCamera(pointer, camera);
+          const point = new THREE.Vector3();
+          if (raycaster.ray.intersectPlane(dragPlane, point)) {
+            contentRoot.worldToLocal(point);
+            transform.translation[0] = point.x;
+            transform.translation[1] = point.y;
+          }
+        } else if (composerTool === "rotate") {
+          transform.rotation_euler_degrees[2] += (event.clientX - compositionDrag.startX) * 0.45;
+        } else if (composerTool === "scale") {
+          const factor = Math.max(0.05, Math.exp((compositionDrag.startY - event.clientY) * 0.01));
+          transform.scale = compositionDrag.transform.scale.map((value) => Number(value) * factor);
+        }
+        compositionDrag.object.userData.compositionTransform = transform;
+        applyAssetTransform(compositionDrag.object, transform);
+        selectionHelper?.update();
+        parent.postMessage({ type: "real2sim-composition-transform", instance_id: compositionDrag.instanceId, transform }, location.origin);
+        event.preventDefault();
+      });
+
+      const finishDrag = (event) => {
+        if (!compositionDrag) return;
+        const instanceId = compositionDrag.instanceId;
+        compositionDrag = null;
+        controls.enabled = true;
+        if (renderer.domElement.hasPointerCapture?.(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+        parent.postMessage({ type: "real2sim-composition-transform-end", instance_id: instanceId }, location.origin);
+      };
+      renderer.domElement.addEventListener("pointerup", finishDrag);
+      renderer.domElement.addEventListener("pointercancel", finishDrag);
+
+      function compositionHit(event, raycasterInstance, pointerInstance) {
+        setPointer(event, pointerInstance);
+        raycasterInstance.setFromCamera(pointerInstance, camera);
+        const hits = raycasterInstance.intersectObjects([...draftObjects.values()], true);
+        for (const result of hits) {
+          let object = result.object;
+          while (object && !object.userData.compositionInstanceId) object = object.parent;
+          if (object?.userData.compositionInstanceId) return object;
+        }
+        return null;
+      }
+
+      function setPointer(event, target) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        target.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        target.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      }
+    }
+
+    async function loadCompositionDraft(payload) {
+      const requested = [payload.robot, ...(Array.isArray(payload.assets) ? payload.assets : [])].filter(Boolean);
+      const requestedIds = new Set(requested.map((item) => String(item.instance_id || "")));
+      for (const [id, object] of draftObjects) {
+        if (requestedIds.has(id)) continue;
+        contentRoot.remove(object);
+        draftObjects.delete(id);
+      }
+      for (const asset of requested) {
+        const instanceId = String(asset.instance_id || "");
+        if (!instanceId) continue;
+        let object = draftObjects.get(instanceId);
+        if (!object) {
+          object = await createOverlayObject(asset);
+          if (!object) {
+            debug.warnings.push(`composition draft ${asset.name || instanceId} has no browser-renderable asset`);
+            continue;
+          }
+          object.userData.compositionInstanceId = instanceId;
+          object.traverse((child) => { child.userData.compositionInstanceId = instanceId; });
+          contentRoot.add(object);
+          draftObjects.set(instanceId, object);
+        }
+        object.userData.compositionTransform = cloneTransform(asset.transform || {});
+        applyAssetTransform(object, object.userData.compositionTransform);
+      }
+      selectedDraftId = String(payload.selected_id || selectedDraftId || "");
+      selectDraftObject(selectedDraftId, false);
+      debug.compositionDraftCount = draftObjects.size;
+      debug.compositionObjects = [...draftObjects.entries()].map(([instanceId, object]) => {
+        const bounds = new THREE.Box3().setFromObject(object);
+        const size = bounds.getSize(new THREE.Vector3());
+        const center = bounds.getCenter(new THREE.Vector3());
+        return { instanceId, size: size.toArray(), center: center.toArray() };
+      });
+      document.body.dataset.compositionDraftCount = String(draftObjects.size);
+      document.body.dataset.compositionBounds = JSON.stringify(debug.compositionObjects);
+    }
+
+    function selectDraftObject(instanceId, notify) {
+      selectedDraftId = instanceId;
+      if (selectionHelper) {
+        scene.remove(selectionHelper);
+        selectionHelper = null;
+      }
+      const object = draftObjects.get(instanceId);
+      if (object) {
+        selectionHelper = new THREE.BoxHelper(object, 0x32dcc0);
+        scene.add(selectionHelper);
+      }
+      if (notify) parent.postMessage({ type: "real2sim-composition-selected", instance_id: instanceId }, location.origin);
+    }
+
+    function cloneTransform(transform) {
+      const translation = Array.isArray(transform.translation) ? transform.translation.map(Number) : [0, 0, 0];
+      const rotation = Array.isArray(transform.rotation_euler_degrees) ? transform.rotation_euler_degrees.map(Number) : [0, 0, 0];
+      const scale = Array.isArray(transform.scale) ? transform.scale.map(Number) : [1, 1, 1];
+      return { translation, rotation_euler_degrees: rotation, scale };
     }
 
     function pointSizeFor(count, asset) {
@@ -764,6 +946,7 @@
 
     function animate() {
       controls.update();
+      selectionHelper?.update();
       debug.canvas = { width: renderer.domElement.width, height: renderer.domElement.height };
       renderer.render(scene, camera);
       requestAnimationFrame(animate);

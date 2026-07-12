@@ -17,7 +17,7 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
 from .config import PlatformConfig, is_path_allowed
-from .motrix_scene import build_spatial_scene_package, compose_scene_asset
+from .motrix_scene import COMPOSITION_ASSET_RECIPES, build_scene_composition, build_spatial_scene_package, compose_scene_asset
 from .source_revision import read_source_revision
 from .storage import ALLOWED_AREAS, BosStorage, normalize_relative_path
 from .store import PlatformStore
@@ -194,6 +194,8 @@ def execute_task(config: PlatformConfig, store: PlatformStore, task: dict[str, A
         return run_motrixsim_scene_import(config, store, task, emit)
     if task_type == "scene_asset_compose":
         return run_scene_asset_compose(config, store, task, emit)
+    if task_type == "scene_composition":
+        return run_scene_composition(config, store, task, emit)
     if task_type == "simulator_validation":
         return run_simulator_validation(config, store, task, emit)
     if task_type == "expert_collection":
@@ -878,6 +880,104 @@ def run_scene_asset_compose(config: PlatformConfig, store: PlatformStore, task: 
         "manifest_path": str(manifest_path),
         "asset": composed["asset"],
         "runtime_validation": validation,
+    }
+
+
+def run_scene_composition(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
+    params = task["params"]
+    parent = store.get_scene(str(params["scene_id"]))
+    source_package = Path(str((parent.get("metadata") or {}).get("package") or ""))
+    if not source_package.is_dir():
+        scene_path = Path(parent["path"])
+        source_package = scene_path if scene_path.is_dir() else scene_path.parent
+    if not (source_package / "scene_manifest.json").is_file():
+        raise ValueError("selected scene is not an editable MotrixSim scene package")
+
+    run_dir = Path(task["run_dir"])
+    composition_dir = run_dir / "scene_composition"
+    _task_progress(store, task, 12, "创建组合版本", "正在复制基础场景，原场景和原始重建产物保持不变")
+    _copy_tree_isolated(source_package, composition_dir)
+    _rebase_package_metadata(composition_dir, source_package)
+
+    composition = params.get("composition") or {}
+    asset_specs = list(composition.get("assets") or [])
+    source_paths: dict[str, Path] = {}
+    for index, spec in enumerate(asset_specs):
+        catalog_id = str(spec.get("catalog_id") or "")
+        if catalog_id in COMPOSITION_ASSET_RECIPES or catalog_id.startswith("primitive:"):
+            continue
+        instance_id = str(spec.get("instance_id") or f"asset_{index + 1}")
+        source_paths[instance_id] = _resolve_asset_source(config, store, spec.get("source") or {}, spec.get("path"))
+
+    robot_source = config.motrixsim_docs_root / "examples" / "assets" / "rm65_open_cabinet" / "mjx_rm65.xml"
+    _task_progress(store, task, 28, "合并 RM65", "正在写入真实关节、执行器、夹爪碰撞体和 MotrixSim 资产")
+    result = build_scene_composition(
+        composition_dir,
+        robot_source=robot_source,
+        robot_spec=composition.get("robot") or {},
+        asset_specs=asset_specs,
+        source_paths=source_paths,
+        validation_steps=int(params.get("validation_steps", 120)),
+        emit=emit,
+    )
+
+    _task_progress(store, task, 82, "登记组合场景", "双运行时校验通过，正在登记预览资产、控制器和场景血缘")
+    artifacts = _index_artifacts(store, task["id"], composition_dir)
+    manifest_path = Path(result["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    revision_id = uuid.uuid4().hex
+    manifest["revision"] = {
+        "id": revision_id,
+        "parent_scene_id": parent["id"],
+        "reason": "motrixsim_scene_composition",
+        "task_id": task["id"],
+    }
+    _attach_artifact_urls(manifest, artifacts)
+    manifest_path.write_text(json.dumps(enrich_scene_manifest_assets(manifest), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    validation = result["validation"]
+    metadata = dict(parent.get("metadata") or {})
+    metadata.update(
+        {
+            "package": str(composition_dir),
+            "parent_scene_id": parent["id"],
+            "revision_reason": "motrixsim_scene_composition",
+            "runtime_validation": {"mujoco": bool(validation["mujoco"]["ok"]), "motrixsim": bool(validation["motrixsim"]["ok"])},
+            "editable": True,
+            "robot_id": "rm65",
+            "controller": "rm65_pick_place_6d_ik" if result["collection_ready"] else None,
+            "collection_ready": bool(result["collection_ready"]),
+        }
+    )
+    name = str(params.get("name") or composition.get("name") or f"{parent['name']} · RM65 组合")
+    scene = store.create_scene(
+        item_id=revision_id,
+        name=name,
+        path=Path(result["runtime_scene"]),
+        metadata=metadata,
+        source_type="scene_composition",
+        source_uri=parent.get("storage_uri") or parent.get("source_uri") or parent["path"],
+        version=_next_scene_revision(str(parent.get("version") or "v1")),
+        parent_task_id=task["id"],
+        manifest_path=manifest_path,
+        metrics={
+            **(parent.get("metrics") or {}),
+            "composition_asset_count": len(asset_specs),
+            "robot_count": 1,
+            "collection_ready": bool(result["collection_ready"]),
+        },
+        tags=list(dict.fromkeys([*(parent.get("tags") or []), "scene-composition", "motrixsim", "rm65", "runtime-validated", *( ["collection-ready"] if result["collection_ready"] else [])])),
+        cache_state="local",
+    )
+    _task_progress(store, task, 96, "组合场景可用", "组合场景已可测试；满足控制器对象约定时可直接进入专家采集")
+    return {
+        "scene_id": scene["id"],
+        "parent_scene_id": parent["id"],
+        "scene_path": scene["path"],
+        "manifest_path": str(manifest_path),
+        "composition": result["composition"],
+        "collection_ready": bool(result["collection_ready"]),
+        "runtime_validation": validation,
+        "report_path": result["report_path"],
     }
 
 

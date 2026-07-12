@@ -51,6 +51,7 @@ class RM65PickPlaceRuntime:
             self._id(mujoco.mjtObj.mjOBJ_GEOM, "right_finger_pad_z_axis"),
         }
         self.target_body = self._id(mujoco.mjtObj.mjOBJ_BODY, "place_target")
+        self.target_home = self.model.body_pos[self.target_body].astype(float).copy()
         self.gripper_joint = self._id(mujoco.mjtObj.mjOBJ_JOINT, "gripper_Left_1_Joint")
         self.gripper_qadr = int(self.model.jnt_qposadr[self.gripper_joint])
         self.joint_ids = [self._id(mujoco.mjtObj.mjOBJ_JOINT, f"joint_{index}") for index in range(1, 7)]
@@ -70,12 +71,20 @@ class RM65PickPlaceRuntime:
     def run_episode(self, *, max_steps: int) -> EpisodeResult:
         mujoco = self.mujoco
         mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
-        cube = np.array([self.rng.uniform(0.645, 0.655), self.rng.uniform(-0.010, 0.010), 0.33], dtype=float)
-        target = np.array([self.rng.uniform(0.42, 0.51), self.rng.uniform(0.13, 0.22), 0.31], dtype=float)
+        cube_home = self.data.qpos[self.cube_qadr : self.cube_qadr + 3].astype(float).copy()
+        cube = cube_home + np.array([self.rng.uniform(-0.010, 0.010), self.rng.uniform(-0.010, 0.010), 0.0], dtype=float)
+        target = np.array(
+            [
+                self.target_home[0] + self.rng.uniform(-0.025, 0.025),
+                self.target_home[1] + self.rng.uniform(-0.025, 0.025),
+                self.target_home[2] - 0.025,
+            ],
+            dtype=float,
+        )
         self.data.qpos[self.cube_qadr : self.cube_qadr + 3] = cube
         self.data.qpos[self.cube_qadr + 3 : self.cube_qadr + 7] = np.array([1.0, 0.0, 0.0, 0.0])
         self.data.qvel[self.model.jnt_dofadr[self.cube_joint] : self.model.jnt_dofadr[self.cube_joint] + 6] = 0
-        self.model.body_pos[self.target_body] = np.array([target[0], target[1], 0.335])
+        self.model.body_pos[self.target_body] = np.array([target[0], target[1], self.target_home[2]])
         mujoco.mj_forward(self.model, self.data)
         for _ in range(120):
             mujoco.mj_step(self.model, self.data)

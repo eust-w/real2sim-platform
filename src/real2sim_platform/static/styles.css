@@ -276,10 +276,62 @@ menu { display: flex; justify-content: flex-end; gap: 8px; margin: 0; padding: 1
 .toast.show { opacity: 1; transform: none; }
 .viewer-mode [data-open-import], .viewer-mode .bulk-bar button, .viewer-mode [data-delete-dataset], .viewer-mode [data-delete-scene], .viewer-mode [data-delete-model] { display: none; }
 
+.composition-workbench { display: grid; grid-template-columns: minmax(230px, .72fr) minmax(560px, 1.8fr) minmax(270px, .82fr); gap: 10px; align-items: stretch; }
+.composition-library, .composition-stage-panel, .composition-inspector { min-height: 640px; }
+.composition-library-body, .composition-inspector-body { display: grid; gap: 12px; padding-top: 12px; }
+.composition-section-head, .composition-hierarchy-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 10px; }
+.composition-section-head strong, .composition-hierarchy-head strong { color: var(--text); font-size: 12px; }
+.composition-resource-list { display: grid; gap: 8px; }
+.composition-resource-card { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 10px; min-height: 78px; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #091720; text-align: left; cursor: grab; }
+.composition-resource-card:active { cursor: grabbing; }
+.composition-resource-card.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(52, 209, 187, .16); }
+.composition-resource-card .resource-mark { width: 54px; height: 54px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 5px; background: #061016; color: var(--accent); font-size: 10px; font-weight: 750; }
+.composition-resource-card .resource-mark img { width: 100%; height: 100%; object-fit: contain; }
+.composition-resource-card strong, .composition-asset-card strong { display: block; font-size: 12px; }
+.composition-resource-card span, .composition-asset-card span { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.35; }
+.composition-asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; max-height: 388px; overflow: auto; padding-right: 2px; }
+.composition-asset-card { min-height: 88px; display: grid; align-content: space-between; gap: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #091720; color: var(--text); text-align: left; cursor: grab; }
+.composition-asset-card:hover, .composition-resource-card:hover { border-color: #39786f; background: #0b1c25; }
+.composition-asset-card[data-in-scene="true"] { border-color: #2b665e; background: #0b211f; }
+.composition-asset-card em { color: var(--accent); font-size: 9px; font-style: normal; }
+.composition-toolbar { min-height: 48px; display: flex; align-items: center; gap: 5px; padding: 8px 11px; border-bottom: 1px solid var(--line-soft); }
+.composition-toolbar button { min-height: 30px; padding: 5px 9px; }
+.composition-toolbar button.active { border-color: var(--accent); background: #103b38; color: #eafffb; }
+.toolbar-separator { width: 1px; height: 22px; margin: 0 4px; background: var(--line); }
+.composition-stage-status { min-width: 0; margin-left: auto; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composition-canvas-wrap { position: relative; height: 476px; margin: 0 !important; overflow: hidden; background: #030709; }
+.composition-canvas-wrap iframe { width: 100%; height: 100%; border: 0; background: #030709; }
+.composition-drop-overlay { position: absolute; inset: 10px; z-index: 4; display: none; place-items: center; border: 1px dashed var(--accent); border-radius: 6px; background: rgba(7, 31, 31, .82); color: #d9fff9; font-size: 14px; font-weight: 700; pointer-events: none; }
+body.composition-dragging .composition-drop-overlay { display: grid; pointer-events: auto; }
+.composition-hierarchy-head { min-height: 34px; padding: 7px 11px; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+.composition-hierarchy { max-height: 120px; overflow: auto; margin: 0 !important; }
+.composition-tree-row { min-height: 31px; display: grid; grid-template-columns: minmax(0, 1fr) 92px 42px; align-items: center; gap: 7px; padding: 5px 11px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
+.composition-tree-row:hover, .composition-tree-row.active { background: #0d222b; }
+.composition-tree-row.active { box-shadow: inset 2px 0 var(--accent); }
+.composition-tree-row span { color: var(--muted); font-size: 9px; }
+.composition-tree-row button { min-height: 24px; padding: 2px 6px; font-size: 9px; }
+.composition-inspector fieldset { display: grid; gap: 9px; margin: 0; padding: 10px; border: 1px solid var(--line-soft); border-radius: 6px; }
+.composition-inspector legend { padding: 0 5px; color: var(--muted); font-size: 10px; }
+.composition-selection-card { min-height: 54px; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #08141c; }
+.composition-selection-card strong { display: block; }
+.composition-selection-card span { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.axis-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.axis-grid label { min-width: 0; font-size: 9px; }
+.axis-grid input { min-width: 0; padding: 7px 6px; }
+.compatibility-card { display: grid; gap: 6px; padding: 10px; border: 1px solid #255f57; border-radius: 6px; background: #09201e; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.compatibility-card strong { color: #74dfcb; }
+.composition-action-bar { position: sticky; bottom: 8px; z-index: 20; display: grid; grid-template-columns: minmax(240px, 1fr) minmax(180px, .75fr) minmax(180px, .75fr) minmax(180px, .75fr); align-items: end; gap: 9px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: rgba(8, 20, 27, .96); box-shadow: 0 14px 40px rgba(0, 0, 0, .38); backdrop-filter: blur(8px); }
+.composition-action-bar button { min-height: 39px; }
+.composition-tasks-panel { margin-top: 10px; }
+.composition-inspector-body > fieldset[disabled] { opacity: .45; }
+
 @media (max-width: 1180px) {
-  .overview-grid, .two-column, .reconstruct-grid, .scene-workbench { grid-template-columns: 1fr; }
+  .overview-grid, .two-column, .reconstruct-grid, .scene-workbench, .composition-workbench { grid-template-columns: 1fr; }
   .overview-grid .wide { grid-column: auto; }
   .scene-workbench .viewer-panel { order: -1; }
+  .composition-stage-panel { order: -1; }
+  .composition-library, .composition-stage-panel, .composition-inspector { min-height: 0; }
+  .composition-action-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .asset-grid, .model-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .selection-card-rail { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
@@ -319,6 +371,12 @@ menu { display: flex; justify-content: flex-end; gap: 8px; margin: 0; padding: 1
   .viewer-panel iframe, #scenePreview { width: calc(100% - 26px); min-height: 390px; }
   .task-facts { grid-template-columns: 1fr; }
   .task-drawer { width: 100vw; }
+  .composition-canvas-wrap { height: 420px; }
+  .composition-action-bar { position: static; grid-template-columns: 1fr; }
+  .composition-asset-grid { display: flex; max-height: none; overflow-x: auto; }
+  .composition-asset-card { flex: 0 0 140px; }
+  .composition-toolbar { overflow-x: auto; }
+  .composition-stage-status { display: none; }
   .toolbar { width: 100%; }
   .toolbar input, .toolbar select { width: 100%; }
   .user-row { align-items: start; flex-direction: column; }

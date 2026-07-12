@@ -20,6 +20,8 @@ from real2sim_platform.adapters import (
     index_artifacts_for_task,
 )
 from real2sim_platform.motrix_scene import (
+    COMPOSITION_ASSET_RECIPES,
+    build_scene_composition,
     compose_scene_asset,
     convert_asset_to_obj,
     detect_spatial_bundle,
@@ -204,6 +206,104 @@ def test_scene_revision_copy_is_isolated_and_rebases_package_paths(tmp_path: Pat
     (revision / "scene_manifest.json").write_text("{}\n", encoding="utf-8")
     assert runtime.read_bytes() == source_runtime_before
     assert (source / "scene_manifest.json").read_bytes() == source_manifest_before
+
+
+def test_scene_composition_catalog_and_payload_are_registered(tmp_path: Path) -> None:
+    config = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace", worker_mode="api")
+    app = create_app(config)
+    package = tmp_path / "editable-scene"
+    runtime = package / "simulator_assets" / "scene.xml"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text('<mujoco><worldbody><geom type="plane" size="2 2 .1"/></worldbody></mujoco>\n', encoding="utf-8")
+    manifest = package / "scene_manifest.json"
+    manifest.write_text(json.dumps({"assets": [], "simulator_artifacts": {"motrixsim": {"runtime_scene": str(runtime)}}}), encoding="utf-8")
+    scene = PlatformStore(config.db_path).create_scene(
+        name="editable",
+        path=runtime,
+        metadata={"package": str(package), "editable": True},
+        source_type="motrixsim_spatial_bundle",
+        manifest_path=manifest,
+    )
+    with TestClient(app) as client:
+        robots = client.get("/api/robots")
+        assert robots.status_code == 200
+        assert robots.json()[0]["id"] == "rm65"
+        assets = client.get("/api/assets").json()
+        assert {"recipe:coffee_table", "recipe:pick_cube", "recipe:place_target"}.issubset({item["id"] for item in assets})
+        invalid = client.post(
+            f"/api/scenes/{scene['id']}/compose",
+            json={"name": "invalid", "robot": {"robot_id": "rm65"}, "assets": [{"catalog_id": "missing", "instance_id": "missing"}]},
+        )
+        assert invalid.status_code == 400
+        queued = client.post(
+            f"/api/scenes/{scene['id']}/compose",
+            json={
+                "name": "RM65 pick place",
+                "robot": {"robot_id": "rm65", "transform": {"translation": [1.03, 0, 0.011], "scale": [1, 1, 1]}},
+                "assets": [
+                    {"catalog_id": recipe_id, "instance_id": f"asset_{index}", "transform": COMPOSITION_ASSET_RECIPES[recipe_id]["default_transform"]}
+                    for index, recipe_id in enumerate(("recipe:coffee_table", "recipe:pick_cube", "recipe:place_target"))
+                ],
+                "validation_steps": 120,
+            },
+        )
+        assert queued.status_code == 200, queued.text
+        assert queued.json()["task"]["type"] == "scene_composition"
+
+
+@pytest.mark.integration
+def test_real_rm65_scene_composition_loads_and_steps_in_both_runtimes(tmp_path: Path) -> None:
+    mujoco = pytest.importorskip("mujoco")
+    pytest.importorskip("motrixsim")
+    candidates = [
+        Path("/opt/motrixsim-docs/examples/assets/rm65_open_cabinet/mjx_rm65.xml"),
+        Path("/Users/d-robotics/workSpace/motrixsim-docs/examples/assets/rm65_open_cabinet/mjx_rm65.xml"),
+    ]
+    robot_source = next((path for path in candidates if path.is_file()), None)
+    if robot_source is None:
+        pytest.skip("real MotrixSim RM65 asset checkout is unavailable")
+    package = tmp_path / "composition"
+    runtime = package / "simulator_assets" / "scene.xml"
+    (package / "assets" / "meshes").mkdir(parents=True)
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text(
+        '<mujoco model="composition"><compiler angle="degree" meshdir="../assets/meshes" autolimits="true"/><option timestep="0.002"/><worldbody><geom type="plane" size="3 3 .1"/></worldbody></mujoco>\n',
+        encoding="utf-8",
+    )
+    (package / "scene_manifest.json").write_text(json.dumps({"assets": [], "simulator_artifacts": {"motrixsim": {"runtime_scene": str(runtime)}}}), encoding="utf-8")
+    (package / "motrix_import.json").write_text(json.dumps({"runtime_scene": str(runtime)}), encoding="utf-8")
+    asset_specs = [
+        {
+            "catalog_id": recipe_id,
+            "instance_id": f"asset_{index}",
+            "name": COMPOSITION_ASSET_RECIPES[recipe_id]["name"],
+            "transform": COMPOSITION_ASSET_RECIPES[recipe_id]["default_transform"],
+        }
+        for index, recipe_id in enumerate(("recipe:coffee_table", "recipe:pick_cube", "recipe:place_target"))
+    ]
+    result = build_scene_composition(
+        package,
+        robot_source=robot_source,
+        robot_spec={"robot_id": "rm65", "transform": {"translation": [1.03, 0, 0.011], "rotation_euler_degrees": [0, 0, 0], "scale": [1, 1, 1]}},
+        asset_specs=asset_specs,
+        source_paths={},
+        validation_steps=120,
+    )
+    assert result["validation"]["mujoco"]["status"] == "loaded_and_stepped"
+    assert result["validation"]["motrixsim"]["status"] == "loaded_and_stepped"
+    assert result["collection_ready"] is True
+    model = mujoco.MjModel.from_xml_path(str(runtime))
+    assert model.nkey >= 1
+    for object_type, name in (
+        (mujoco.mjtObj.mjOBJ_BODY, "base_link"),
+        (mujoco.mjtObj.mjOBJ_BODY, "pick_cube"),
+        (mujoco.mjtObj.mjOBJ_BODY, "place_target"),
+        (mujoco.mjtObj.mjOBJ_JOINT, "pick_cube_free"),
+        (mujoco.mjtObj.mjOBJ_GEOM, "pick_cube_geom"),
+        (mujoco.mjtObj.mjOBJ_CAMERA, "overview"),
+    ):
+        assert mujoco.mj_name2id(model, object_type, name) >= 0
+    assert Path(result["composition"]["robot"]["path"]).stat().st_size > 1_000_000
 
 
 def test_ascii_3dgs_spz_exporter_uses_real_spark_writer(tmp_path: Path) -> None:

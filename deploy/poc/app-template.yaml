@@ -26,6 +26,7 @@ data:
     anysplat_python = "/opt/real2sim_paper_runtime/envs/anysplat/bin/python"
     cuda_home = "/usr/local/cuda"
     runtime_env_script = "/opt/gs_playground/scripts/real2sim_wuying_paper_env.sh"
+    motrixsim_docs_root = "/opt/motrixsim-docs"
     allowed_path_roots = "/var/lib/real2sim-poc:/opt/DISCOVERSE:/opt/gs_playground:/opt/motrixsim-docs:/opt/real2sim_paper_runtime:/tmp"
     production_mode = true
     auth_enabled = true

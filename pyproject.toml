@@ -42,6 +42,7 @@ where = ["src"]
   "static/vendor/three/addons/loaders/*",
   "static/vendor/three/addons/postprocessing/*",
   "static/vendor/three/addons/utils/*",
+  "static/assets/robots/*",
 ]
 
 [tool.pytest.ini_options]
