@@ -122,6 +122,7 @@
     let sourceUpAxis = "Z";
     let sparkRenderer = null;
     let sparkModule = null;
+    let loadSequence = 0;
     const debug = {
       backend: "loading",
       loaded: false,
@@ -282,6 +283,8 @@
         addPlaceholder(`large asset skipped: ${asset.name || "asset"} · ${asset.size_label || "unknown size"} · click to load`);
         return;
       }
+      const loadId = ++loadSequence;
+      document.body.dataset.viewerLoaded = "false";
       if (loadedObject) contentRoot.remove(loadedObject);
       clearOverlays();
       const suffix = (asset.name || asset.path || "").toLowerCase().split(".").pop();
@@ -293,28 +296,33 @@
       setRenderQualityForAsset(asset);
       const size = asset.size_label ? ` · ${asset.size_label}` : "";
       if (suffix === "ply" && shouldUseSparkForPly(asset)) {
-        await withLoadingTimeout(loadSparkOrFallback(asset, suffix), `loading timed out: ${asset.name || "asset"}${size}`, 90000);
+        await withLoadingTimeout(loadSparkOrFallback(asset, suffix, loadId), `loading timed out: ${asset.name || "asset"}${size}`, 90000);
       } else if (suffix === "ply") {
-        await loadPlyFallback(asset);
+        await loadPlyFallback(asset, loadId);
       } else if (["spz", "splat", "ksplat", "sog", "zip", "rad"].includes(suffix)) {
-        await withLoadingTimeout(loadSparkOrFallback(asset, suffix), `loading timed out: ${asset.name || "asset"}${size}`, 20000);
+        await withLoadingTimeout(loadSparkOrFallback(asset, suffix, loadId), `loading timed out: ${asset.name || "asset"}${size}`, 20000);
       } else if (suffix === "glb" || suffix === "gltf") {
         status.textContent = `Three.js fallback · loading ${asset.name}${size}`;
         const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
         const gltf = await withLoadingTimeout(new GLTFLoader().loadAsync(asset.url), `loading timed out: ${asset.name || "asset"}${size}`);
+        if (loadId !== loadSequence) return;
         loadedObject = gltf.scene;
         contentRoot.add(loadedObject);
         normalizeObjectFromBox(loadedObject);
         debug.backend = "three_fallback";
         debug.loaded = true;
+        markViewerReady("three_fallback");
         status.textContent = `Three.js fallback · ${asset.name}`;
       } else if (suffix === "obj") {
         status.textContent = `Three.js fallback · loading ${asset.name}${size}`;
-        loadedObject = await withLoadingTimeout(new OBJLoader().loadAsync(asset.url), `loading timed out: ${asset.name || "asset"}${size}`);
+        const object = await withLoadingTimeout(new OBJLoader().loadAsync(asset.url), `loading timed out: ${asset.name || "asset"}${size}`);
+        if (loadId !== loadSequence) return;
+        loadedObject = object;
         contentRoot.add(loadedObject);
         normalizeObjectFromBox(loadedObject);
         debug.backend = "three_fallback";
         debug.loaded = true;
+        markViewerReady("three_fallback");
         status.textContent = `Three.js fallback · ${asset.name}`;
       } else if (["xml", "urdf", "mjcf"].includes(suffix)) {
         status.textContent = "这是仿真描述文件，用于 MotrixSim/MuJoCo 加载，不会替换当前 3D 预览";
@@ -325,6 +333,11 @@
       } else {
         addPlaceholder(`当前浏览器预览暂不支持 .${suffix || "file"} 文件`);
       }
+    }
+
+    function markViewerReady(backend) {
+      document.body.dataset.viewerBackend = backend;
+      document.body.dataset.viewerLoaded = "true";
     }
 
     async function loadAssetWithSceneFallback(asset, assets, options = {}) {
@@ -451,7 +464,7 @@
         || null;
     }
 
-    async function loadSparkOrFallback(asset, suffix) {
+    async function loadSparkOrFallback(asset, suffix, loadId) {
       try {
         const spark = await loadSparkModule();
         if (!sparkRenderer) {
@@ -463,13 +476,19 @@
         loadedObject = splatMesh;
         contentRoot.add(splatMesh);
         await splatMesh.initialized;
+        if (loadId !== loadSequence) {
+          contentRoot.remove(splatMesh);
+          return;
+        }
         normalizeObjectFromBox(splatMesh);
         const count = splatMesh.splats?.getNumSplats?.() || splatMesh.packedSplats?.numSplats || 0;
         debug.backend = "spark";
         debug.loaded = true;
         debug.pointCount = count;
+        markViewerReady("spark");
         status.textContent = `Spark · ${asset.name}${count ? ` · ${count} splats` : ""}`;
       } catch (error) {
+        if (loadId !== loadSequence) return;
         console.info("Spark preview unavailable; using Three.js fallback", error);
         debug.warnings.push(error.message || String(error));
         if (loadedObject) {
@@ -477,13 +496,14 @@
           loadedObject = null;
         }
         if (suffix !== "ply") throw error;
-        await loadPlyFallback(asset);
+        await loadPlyFallback(asset, loadId);
       }
     }
 
-    async function loadPlyFallback(asset) {
+    async function loadPlyFallback(asset, loadId = loadSequence) {
       status.textContent = `Three.js fallback · loading ${asset.name}${asset.size_label ? ` · ${asset.size_label}` : ""}`;
       const geometry = await withLoadingTimeout(new PLYLoader().loadAsync(asset.url), `loading timed out: ${asset.name || "asset"}${asset.size_label ? ` · ${asset.size_label}` : ""}`);
+      if (loadId !== loadSequence) return;
       geometry.computeBoundingSphere();
       geometry.computeVertexNormals();
       const count = geometry.getAttribute("position")?.count || 0;
@@ -499,6 +519,7 @@
       debug.backend = "three_fallback";
       debug.loaded = true;
       debug.pointCount = count;
+      markViewerReady("three_fallback");
       status.textContent = `Three.js fallback · ${asset.name} · ${count} points`;
     }
 
@@ -520,6 +541,7 @@
         }
       }
       debug.overlayCount = overlayObjects.length;
+      document.body.dataset.overlayCount = String(overlayObjects.length);
       if (overlayObjects.length) hint.textContent = `已叠加 ${overlayObjects.length} 个 MotrixSim 数字资产；位置、旋转、缩放与仿真场景保持一致。`;
     }
 
