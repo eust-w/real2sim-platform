@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260713-scene-composition-performance-v6";
+const STATIC_VERSION = "20260713-scene-library-assets-v7";
 
 const state = {
   datasets: [],
@@ -10,6 +10,7 @@ const state = {
   currentImport: "hf",
   editing: null,
   assetLibrary: [],
+  currentSceneManifest: null,
   digitalAssets: [],
   robots: [],
   refreshTimer: null,
@@ -46,7 +47,7 @@ const $ = (id) => document.getElementById(id);
 
 const taskScopes = {
   dataTaskList: ["hf_import", "media_prepare"],
-  sceneTaskList: ["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"],
+  sceneTaskList: ["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "scene_asset_update", "scene_asset_delete", "scene_clone", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"],
   compositionTaskList: ["scene_composition", "simulator_validation"],
   collectTaskList: ["expert_collection"],
   trainTaskList: ["training"],
@@ -219,6 +220,7 @@ function updateActionAvailability() {
   setActionAvailability("createTrainTask", writable && collectionDatasets().length > 0 && Boolean($("trainRecipe")?.value), "请先完成真实专家采集并确认 ACT 运行时");
   setActionAvailability("createInferTask", writable && state.models.length > 0 && state.scenes.length > 0, state.models.length ? "请先完成场景重建" : "请先训练模型");
   setActionAvailability("addSceneAsset", writable && state.scenes.length > 0, "请先完成场景重建");
+  setActionAvailability("createSceneLibrary", writable && (state.scenes.length > 0 || preparedDatasets().length > 0), "请先导入或准备数据");
   setActionAvailability("saveSceneComposition", writable && Boolean(state.composition.baseSceneId && state.composition.robotId), "请先选择基础场景和机器人");
 }
 
@@ -248,12 +250,15 @@ function renderSelectors() {
   fillSelect("inferModel", state.models, "暂无模型，请先训练");
   fillSelect("assetScene", state.scenes, "暂无场景，请先重建");
   fillSelect("composeBaseScene", baseCompositionScenes(), "暂无可编辑场景，请先导入或重建");
+  fillSelect("sceneCloneSource", state.scenes, "暂无可复制场景");
+  fillSelect("sceneCreateDataset", preparedDatasets(), "暂无已准备帧数据");
   if ($("composeBaseScene") && state.composition.baseSceneId) $("composeBaseScene").value = state.composition.baseSceneId;
   const assetScene = $("assetScene");
   if (assetScene && state.activeSceneId && state.scenes.some((scene) => scene.id === state.activeSceneId)) {
     assetScene.value = state.activeSceneId;
   }
   fillAssetPreset();
+  updateSceneCreateMode();
 }
 
 function fillSelect(id, items, emptyText) {
@@ -990,10 +995,30 @@ function renderSceneViewerShell() {
 
 async function renderSceneAssets(sceneId) {
   const manifest = await api(`/api/scenes/${sceneId}/manifest`);
-  const assets = Array.isArray(manifest.assets) ? prioritizeAssets(manifest.assets).slice(0, 18) : [];
-  state.assetLibrary = Array.isArray(manifest.assets) ? prioritizeAssets(manifest.assets).filter((asset) => asset.path) : [];
+  state.currentSceneManifest = manifest;
+  const allAssets = Array.isArray(manifest.assets) ? manifest.assets : [];
+  const assets = prioritizeAssets(allAssets).slice(0, 18);
+  state.assetLibrary = prioritizeAssets(allAssets).filter((asset) => asset.path);
   fillAssetPreset();
+  renderSceneAssetInstances(allAssets, sceneId);
   setHtml("assetRail", assets.map(assetCard).join("") || emptyState("该场景清单里还没有可展示产物。"));
+}
+
+function renderSceneAssetInstances(assets, sceneId) {
+  const editable = assets.filter((asset) => asset && asset.role === "added_asset" && asset.runtime?.body);
+  setHtml("sceneAssetInstances", editable.map((asset) => {
+    const transform = asset.transform || {};
+    const position = Array.isArray(transform.translation) ? transform.translation.map((value) => Number(value).toFixed(2)).join(" / ") : "未设置";
+    const rotation = Array.isArray(transform.rotation_euler_degrees) ? transform.rotation_euler_degrees.map((value) => Number(value).toFixed(0)).join(" / ") : "0 / 0 / 0";
+    const physics = asset.physics || {};
+    return `<div class="asset-instance-row">
+      <div class="asset-instance-mark">物</div>
+      <div class="asset-instance-title"><strong>${escapeHtml(asset.name || asset.runtime.body)}</strong><span>${escapeHtml(asset.kind || asset.format || "数字资产")} · ${escapeHtml(asset.runtime.body)}</span></div>
+      <div class="asset-instance-meta">位置 ${escapeHtml(position)} · 旋转 ${escapeHtml(rotation)}</div>
+      <div class="asset-instance-meta">${physics.dynamic ? "可运动" : "静态"} · ${physics.collision_mode === "visual_only" ? "仅可见" : "参与碰撞"}</div>
+      <div class="asset-instance-actions"><button data-asset-edit="${escapeAttr(asset.runtime.body)}" data-asset-scene="${escapeAttr(sceneId)}">编辑位置</button><button class="danger-button" data-asset-delete="${escapeAttr(asset.runtime.body)}" data-asset-scene="${escapeAttr(sceneId)}">删除</button></div>
+    </div>`;
+  }).join("") || emptyState("当前场景还没有添加的数字资产。请点击“添加新资产”或从资产库选择后保存。"));
 }
 
 function fillAssetPreset() {
@@ -1463,7 +1488,102 @@ function openAssetEditor(sceneId) {
   switchTab("scenes");
   renderSceneList();
   renderSceneViewerShell();
+  resetAssetEditor();
   scrollIntoViewIfPossible(".asset-editor-panel");
+}
+
+function resetAssetEditor() {
+  const instance = $("assetInstanceId");
+  if (instance) instance.value = "";
+  const button = $("addSceneAsset");
+  if (button) button.textContent = "保存为新版本";
+  const fields = {
+    assetName: "",
+    assetMass: "0.25",
+    assetSizeX: "0.10",
+    assetSizeY: "0.10",
+    assetSizeZ: "0.10",
+    assetScaleX: "1",
+    assetScaleY: "1",
+    assetScaleZ: "1",
+    assetPosX: "0",
+    assetPosY: "0",
+    assetPosZ: "0",
+    assetRotX: "0",
+    assetRotY: "0",
+    assetRotZ: "0",
+  };
+  for (const [id, value] of Object.entries(fields)) if ($(id)) $(id).value = value;
+  if ($("assetDynamic")) $("assetDynamic").checked = false;
+  if ($("assetCollisionMode")) $("assetCollisionMode").value = "visual_and_collision";
+  if ($("assetPreset") && state.digitalAssets.length) $("assetPreset").value = state.digitalAssets[0].id;
+  updateDigitalAssetHint();
+}
+
+function openAssetInstanceEditor(sceneId, assetId) {
+  const asset = (state.currentSceneManifest?.assets || []).find((item) => item?.runtime?.body === assetId);
+  if (!asset) return toast("资产清单已更新，请重新选择场景。");
+  state.activeSceneId = sceneId;
+  if ($("assetScene")) $("assetScene").value = sceneId;
+  if ($("assetInstanceId")) $("assetInstanceId").value = assetId;
+  if ($("assetName")) $("assetName").value = asset.name || "";
+  const transform = asset.transform || {};
+  const translation = transform.translation || [0, 0, 0];
+  const rotation = transform.rotation_euler_degrees || [0, 0, 0];
+  const scale = transform.scale || [1, 1, 1];
+  [["assetPosX", translation[0]], ["assetPosY", translation[1]], ["assetPosZ", translation[2]], ["assetRotX", rotation[0]], ["assetRotY", rotation[1]], ["assetRotZ", rotation[2]], ["assetScaleX", scale[0]], ["assetScaleY", scale[1]], ["assetScaleZ", scale[2]]].forEach(([id, value]) => { if ($(id)) $(id).value = value; });
+  const physics = asset.physics || {};
+  if ($("assetDynamic")) $("assetDynamic").checked = Boolean(physics.dynamic);
+  if ($("assetMass")) $("assetMass").value = physics.mass ?? 0.25;
+  if ($("assetCollisionMode")) $("assetCollisionMode").value = physics.collision_mode || "visual_and_collision";
+  const dimensions = physics.dimensions || [0.1, 0.1, 0.1];
+  [["assetSizeX", dimensions[0]], ["assetSizeY", dimensions[1]], ["assetSizeZ", dimensions[2]]].forEach(([id, value]) => { if ($(id)) $(id).value = value; });
+  if ($("addSceneAsset")) $("addSceneAsset").textContent = "保存资产修订";
+  switchTab("scenes");
+  renderSceneList();
+  scrollIntoViewIfPossible(".asset-editor-panel");
+  toast(`正在编辑“${asset.name || assetId}”，保存后会生成新场景版本`);
+}
+
+function openSceneCreateDialog() {
+  if (!state.scenes.length && !preparedDatasets().length) return toast("请先导入数据或完成一次场景重建。");
+  if ($("sceneCreateName")) $("sceneCreateName").value = state.scenes[0] ? `${resourceDisplayName(state.scenes[0])} · 新版本` : "新建场景";
+  updateSceneCreateMode();
+  $("sceneCreateDialog")?.showModal();
+}
+
+function updateSceneCreateMode() {
+  const mode = $("sceneCreateMode")?.value || "clone";
+  const cloneField = $("sceneCloneSourceField");
+  const reconstructField = $("sceneReconstructSourceField");
+  if (cloneField) cloneField.hidden = mode !== "clone";
+  if (reconstructField) reconstructField.hidden = mode !== "reconstruct";
+  setText("sceneCreateHint", mode === "clone" ? "复制会产生独立场景版本，随后可在资产管理中添加和调整物体。" : "重建会创建真实非 dry-run 任务，完成后新场景会自动加入场景库并可预览。 ");
+}
+
+async function submitSceneCreate(event) {
+  event.preventDefault();
+  const mode = $("sceneCreateMode")?.value || "clone";
+  const name = $("sceneCreateName")?.value.trim();
+  const validationSteps = Number($("sceneCreateValidationSteps")?.value || 60);
+  if (!name) return toast("请输入场景名称。");
+  if (mode === "reconstruct") {
+    const datasetId = $("sceneCreateDataset")?.value;
+    if (!datasetId) return toast("请先选择已准备数据集。");
+    $("sceneCreateDialog")?.close();
+    await createTask("scene_reconstruction", { dataset_id: datasetId, scene_name: name, renderer: "auto", simulators: ["mujoco", "motrixsim"], dry_run: false, preflight_required: true, min_frames: 30, quality_preset: "discoverse-high" });
+    switchTab("reconstruct");
+    return;
+  }
+  const sceneId = $("sceneCloneSource")?.value;
+  if (!sceneId) return toast("请先选择基础场景。");
+  const result = await api(`/api/scenes/${sceneId}/clone`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, validation_steps: validationSteps }) });
+  $("sceneCreateDialog")?.close();
+  const task = result.task;
+  if (task) state.selectedTaskId = task.id;
+  toast("新场景任务已创建，完成后会进入场景库。");
+  await refresh({ quiet: true });
+  if (task) showTask(task.id).catch((error) => toast(error.message));
 }
 
 async function openJsonDetails(title, path) {
@@ -1629,7 +1749,7 @@ function collectionDatasets() {
 }
 
 function sceneIdFromTask(task) {
-  return ["scene_reconstruction", "motrixsim_scene_import", "scene_asset_compose", "scene_composition"].includes(task?.type) ? task.result?.scene_id || "" : "";
+  return ["scene_reconstruction", "motrixsim_scene_import", "scene_asset_compose", "scene_asset_update", "scene_asset_delete", "scene_clone", "scene_composition"].includes(task?.type) ? task.result?.scene_id || "" : "";
 }
 
 function resourceView(kind, item) {
@@ -1743,6 +1863,9 @@ function taskTypeLabel(type) {
     motrixsim_asset_import: "MotrixSim 资产导入",
     motrixsim_scene_import: "MotrixSim 场景包导入",
     scene_asset_compose: "数字资产合成",
+    scene_asset_update: "资产位置与属性编辑",
+    scene_asset_delete: "资产删除",
+    scene_clone: "场景复制",
     scene_composition: "场景组合",
     simulator_validation: "仿真校验",
     renderer_benchmark: "渲染器对比",
@@ -1939,7 +2062,7 @@ function exportSummary(payload = {}) {
 function switchTaskPage(type) {
   if (["hf_import", "media_prepare"].includes(type)) switchTab("data");
   else if (type === "scene_composition") switchTab("compose");
-  else if (["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"].includes(type)) switchTab("reconstruct");
+  else if (["scene_reconstruction", "reconstruction_preflight", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "scene_asset_update", "scene_asset_delete", "scene_clone", "simulator_validation", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize"].includes(type)) switchTab("reconstruct");
   else if (type === "expert_collection") switchTab("collect");
   else if (type === "training") switchTab("train");
   else if (type === "inference") switchTab("infer");
@@ -2124,6 +2247,10 @@ function bindEvents() {
   $("closeDrawer")?.addEventListener("click", closeDrawer);
   $("importForm")?.addEventListener("submit", submitImport);
   $("editForm")?.addEventListener("submit", saveEdit);
+  $("createSceneLibrary")?.addEventListener("click", openSceneCreateDialog);
+  $("sceneCreateForm")?.addEventListener("submit", submitSceneCreate);
+  $("sceneCreateMode")?.addEventListener("change", updateSceneCreateMode);
+  $("resetAssetEditor")?.addEventListener("click", resetAssetEditor);
   $("datasetFilter")?.addEventListener("change", renderDatasetList);
   $("datasetSearch")?.addEventListener("input", renderDatasetList);
   ["reconstructInput", "sceneMinFrames", "acceptanceLevel", "qualityPreset", "cameraModel", "matcherSelect"].forEach((id) => {
@@ -2135,6 +2262,7 @@ function bindEvents() {
   });
   $("assetScene")?.addEventListener("change", () => {
     state.activeSceneId = $("assetScene").value;
+    resetAssetEditor();
     renderSceneList();
     renderSceneViewerShell();
   });
@@ -2208,9 +2336,10 @@ function bindEvents() {
     const sceneId = $("assetScene")?.value || state.activeSceneId || state.scenes[0]?.id;
     if (!sceneId) return toast("请先选择一个场景。");
     const payload = sceneAssetPayload();
-    if (!payload.primitive && !payload.source?.type) return toast("请先从数字资产库选择一个资产。");
-    const result = await api(`/api/scenes/${sceneId}/assets`, {
-      method: "POST",
+    const assetId = $("assetInstanceId")?.value || "";
+    if (!assetId && !payload.primitive && !payload.source?.type) return toast("请先从数字资产库选择一个资产。");
+    const result = await api(assetId ? `/api/scenes/${sceneId}/assets/${assetId}` : `/api/scenes/${sceneId}/assets`, {
+      method: assetId ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
@@ -2219,9 +2348,10 @@ function bindEvents() {
       state.selectedTaskId = task.id;
       state.tasks.unshift(task);
     }
-    toast("资产合成任务已创建；双运行时校验通过后生成新版本");
+    toast(assetId ? "资产修订任务已创建；校验通过后生成新版本" : "资产合成任务已创建；校验通过后生成新版本");
     await refresh({ quiet: true });
     if (task) showTask(task.id).catch((error) => toast(error.message));
+    resetAssetEditor();
   });
 
   $("createCollectTask")?.addEventListener("click", async () => {
@@ -2484,6 +2614,20 @@ async function handleBodyClick(event) {
 
   const sceneAdd = event.target.closest("[data-scene-add]");
   if (sceneAdd) openAssetEditor(sceneAdd.dataset.sceneAdd);
+
+  const assetEdit = event.target.closest("[data-asset-edit]");
+  if (assetEdit) openAssetInstanceEditor(assetEdit.dataset.assetScene, assetEdit.dataset.assetEdit);
+
+  const assetDelete = event.target.closest("[data-asset-delete]");
+  if (assetDelete) {
+    if (!confirm("删除资产会生成一个新的场景 revision，原场景和磁盘文件都会保留。确认继续？")) return;
+    const result = await api(`/api/scenes/${assetDelete.dataset.assetScene}/assets/${assetDelete.dataset.assetDelete}`, { method: "DELETE" });
+    const task = result.task;
+    if (task) state.selectedTaskId = task.id;
+    toast("资产删除任务已创建，校验通过后进入新场景版本");
+    await refresh({ quiet: true });
+    if (task) showTask(task.id).catch((error) => toast(error.message));
+  }
 
   const sceneCover = event.target.closest("[data-scene-cover]");
   if (sceneCover) await createTask("scene_cover_render", { scene_id: sceneCover.dataset.sceneCover });

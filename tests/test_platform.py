@@ -4,6 +4,7 @@ import shutil
 import struct
 import subprocess
 import time
+import json
 from pathlib import Path
 
 import pytest
@@ -225,6 +226,55 @@ def test_scene_asset_request_queues_real_revision_task_from_catalog(tmp_path: Pa
     assert payload["task"]["params"]["source"] == catalog_asset["source"]
     assert payload["task"]["params"]["physics"]["dynamic"] is True
     assert len(client.get("/api/scenes").json()) == 1
+
+
+def test_scene_library_clone_and_asset_revision_requests_are_real_tasks(tmp_path: Path) -> None:
+    package = tmp_path / "editable_package"
+    runtime_dir = package / "simulator_assets"
+    runtime_dir.mkdir(parents=True)
+    runtime = runtime_dir / "scene.xml"
+    runtime.write_text(
+        '<mujoco model="fixture"><option timestep="0.002"/><worldbody><body name="added_box" pos="0 0 0"><geom type="box" size="0.05 0.05 0.05"/></body></worldbody></mujoco>',
+        encoding="utf-8",
+    )
+    manifest = package / "scene_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema": "real2sim.scene_manifest.v3",
+                "assets": [
+                    {
+                        "name": "测试物体",
+                        "role": "added_asset",
+                        "kind": "primitive",
+                        "runtime": {"body": "added_box"},
+                        "transform": {"translation": [0, 0, 0], "rotation_euler_degrees": [0, 0, 0], "scale": [1, 1, 1]},
+                        "physics": {"dynamic": False, "mass": 1, "collision_mode": "visual_and_collision", "dimensions": [0.1, 0.1, 0.1]},
+                    }
+                ],
+                "simulator_artifacts": {"motrixsim": {"runtime_scene": str(runtime)}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace", allowed_path_roots=(tmp_path,))
+    client = TestClient(create_app(cfg))
+    scene = client.post(
+        "/api/scenes/import",
+        json={"path": str(runtime), "name": "可编辑场景", "metadata": {"package": str(package), "manifest_path": str(manifest)}},
+    ).json()
+    update = client.patch(
+        f"/api/scenes/{scene['id']}/assets/added_box",
+        json={"name": "新位置物体", "transform": {"translation": [1, 2, 3]}, "physics": {"dynamic": False}, "validation_steps": 1},
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["task"]["type"] == "scene_asset_update"
+    clone = client.post(f"/api/scenes/{scene['id']}/clone", json={"name": "可编辑场景副本", "validation_steps": 1})
+    assert clone.status_code == 200, clone.text
+    assert clone.json()["task"]["type"] == "scene_clone"
+    delete = client.delete(f"/api/scenes/{scene['id']}/assets/added_box")
+    assert delete.status_code == 200, delete.text
+    assert delete.json()["task"]["type"] == "scene_asset_delete"
 
 
 def test_scene_runtime_metadata_update(tmp_path: Path) -> None:

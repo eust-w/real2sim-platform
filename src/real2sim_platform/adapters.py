@@ -17,7 +17,7 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
 from .config import PlatformConfig, is_path_allowed
-from .motrix_scene import COMPOSITION_ASSET_RECIPES, build_scene_composition, build_spatial_scene_package, compose_scene_asset
+from .motrix_scene import COMPOSITION_ASSET_RECIPES, build_scene_composition, build_spatial_scene_package, compose_scene_asset, revise_scene_asset, validate_runtime_scene
 from .source_revision import read_source_revision
 from .storage import ALLOWED_AREAS, BosStorage, normalize_relative_path
 from .store import PlatformStore
@@ -194,6 +194,12 @@ def execute_task(config: PlatformConfig, store: PlatformStore, task: dict[str, A
         return run_motrixsim_scene_import(config, store, task, emit)
     if task_type == "scene_asset_compose":
         return run_scene_asset_compose(config, store, task, emit)
+    if task_type == "scene_asset_update":
+        return run_scene_asset_revision(config, store, task, emit, delete=False)
+    if task_type == "scene_asset_delete":
+        return run_scene_asset_revision(config, store, task, emit, delete=True)
+    if task_type == "scene_clone":
+        return run_scene_clone(config, store, task, emit)
     if task_type == "scene_composition":
         return run_scene_composition(config, store, task, emit)
     if task_type == "simulator_validation":
@@ -881,6 +887,123 @@ def run_scene_asset_compose(config: PlatformConfig, store: PlatformStore, task: 
         "asset": composed["asset"],
         "runtime_validation": validation,
     }
+
+
+def run_scene_asset_revision(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None], *, delete: bool) -> dict[str, Any]:
+    params = task["params"]
+    parent = store.get_scene(str(params["scene_id"]))
+    source_package = Path(str((parent.get("metadata") or {}).get("package") or ""))
+    if not source_package.is_dir():
+        scene_path = Path(parent["path"])
+        source_package = scene_path if scene_path.is_dir() else scene_path.parent
+    if not (source_package / "scene_manifest.json").is_file():
+        raise ValueError("selected scene is not an editable MotrixSim scene package")
+    asset_id = str(params.get("asset_id") or "").strip()
+    if not asset_id:
+        raise ValueError("scene asset revision requires asset_id")
+
+    run_dir = Path(task["run_dir"])
+    revision_dir = run_dir / "scene_revision"
+    _task_progress(store, task, 18, "创建场景版本", "正在复制父场景，原版本保持不变")
+    _copy_tree_isolated(source_package, revision_dir)
+    _rebase_package_metadata(revision_dir, source_package)
+    operation = "asset_deleted" if delete else "asset_updated"
+    _task_progress(store, task, 42, "更新场景资产", "正在修改资产位置、物理属性或从场景中移除资产")
+    revised = revise_scene_asset(
+        revision_dir,
+        asset_id=asset_id,
+        asset_spec=params.get("asset_spec") or {},
+        delete=delete,
+        validation_steps=int(params.get("validation_steps", 60)),
+        emit=emit,
+    )
+    _task_progress(store, task, 82, "登记场景修订", "真实运行时校验通过，正在登记新场景版本")
+    artifacts = _index_artifacts(store, task["id"], revision_dir)
+    manifest_path = Path(revised["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    revision_id = uuid.uuid4().hex
+    manifest["revision"] = {"id": revision_id, "parent_scene_id": parent["id"], "reason": operation, "task_id": task["id"]}
+    _attach_artifact_urls(manifest, artifacts)
+    manifest_path.write_text(json.dumps(enrich_scene_manifest_assets(manifest), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    validation = revised["validation"]
+    metadata = dict(parent.get("metadata") or {})
+    metadata.update({
+        "package": str(revision_dir),
+        "parent_scene_id": parent["id"],
+        "revision_reason": operation,
+        "runtime_validation": {"mujoco": bool(validation["mujoco"]["ok"]), "motrixsim": bool(validation["motrixsim"]["ok"])},
+        "editable": True,
+    })
+    asset_name = str((revised.get("asset") or {}).get("name") or asset_id)
+    scene = store.create_scene(
+        item_id=revision_id,
+        name=str(params.get("revision_name") or f"{parent['name']} · {'移除' if delete else '调整'} {asset_name}"),
+        path=Path(revised["runtime_scene"]),
+        metadata=metadata,
+        source_type="scene_revision",
+        source_uri=parent.get("storage_uri") or parent.get("source_uri") or parent["path"],
+        version=_next_scene_revision(str(parent.get("version") or "v1")),
+        parent_task_id=task["id"],
+        manifest_path=manifest_path,
+        metrics={**(parent.get("metrics") or {}), "added_asset_count": len([item for item in manifest.get("assets", []) if item.get("role") == "added_asset"])},
+        tags=list(dict.fromkeys([*(parent.get("tags") or []), "scene-revision", "asset-edited", "runtime-validated"])),
+        cache_state="local",
+    )
+    _task_progress(store, task, 94, "新版本可用", "资产修订已保存为新版本，可继续编辑、仿真和采集")
+    return {"scene_id": scene["id"], "parent_scene_id": parent["id"], "scene_path": scene["path"], "manifest_path": str(manifest_path), "asset": revised["asset"], "runtime_validation": validation, "operation": operation}
+
+
+def run_scene_clone(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
+    params = task["params"]
+    parent = store.get_scene(str(params["scene_id"]))
+    source_package = Path(str((parent.get("metadata") or {}).get("package") or ""))
+    if not source_package.is_dir():
+        scene_path = Path(parent["path"])
+        source_package = scene_path if scene_path.is_dir() else scene_path.parent
+    if not (source_package / "scene_manifest.json").is_file():
+        raise ValueError("selected scene is not an editable MotrixSim scene package")
+    run_dir = Path(task["run_dir"])
+    clone_dir = run_dir / "scene_clone"
+    _task_progress(store, task, 20, "复制场景版本", "正在创建独立场景包，父场景不会被覆盖")
+    _copy_tree_isolated(source_package, clone_dir)
+    _rebase_package_metadata(clone_dir, source_package)
+    manifest_path = clone_dir / "scene_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runtime_scene = Path(str((manifest.get("simulator_artifacts") or {}).get("motrixsim", {}).get("runtime_scene") or clone_dir / "simulator_assets" / "scene.xml"))
+    if not runtime_scene.is_file():
+        runtime_scene = clone_dir / "simulator_assets" / "scene.xml"
+    _task_progress(store, task, 52, "校验复制版本", "正在用 MuJoCo 和 MotrixSim 真实加载复制后的场景")
+    validation = validate_runtime_scene(runtime_scene, steps=int(params.get("validation_steps", 60)))
+    report_path = clone_dir / "reports" / "scene_clone_validation.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(validation, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if not validation["ok"]:
+        failed = [name for name in ("mujoco", "motrixsim") if not validation[name]["ok"]]
+        raise RuntimeError("Cloned scene failed runtime validation: " + "; ".join(f"{name}: {validation[name].get('error', 'unknown error')}" for name in failed))
+    artifacts = _index_artifacts(store, task["id"], clone_dir)
+    revision_id = uuid.uuid4().hex
+    manifest["revision"] = {"id": revision_id, "parent_scene_id": parent["id"], "reason": "scene_cloned", "task_id": task["id"]}
+    manifest["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    _attach_artifact_urls(manifest, artifacts)
+    manifest_path.write_text(json.dumps(enrich_scene_manifest_assets(manifest), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    metadata = dict(parent.get("metadata") or {})
+    metadata.update({"package": str(clone_dir), "parent_scene_id": parent["id"], "revision_reason": "scene_cloned", "runtime_validation": {"mujoco": True, "motrixsim": True}, "editable": True})
+    scene = store.create_scene(
+        item_id=revision_id,
+        name=str(params.get("name") or f"{parent['name']} · 新版本"),
+        path=runtime_scene,
+        metadata=metadata,
+        source_type="scene_revision",
+        source_uri=parent.get("storage_uri") or parent.get("source_uri") or parent["path"],
+        version=_next_scene_revision(str(parent.get("version") or "v1")),
+        parent_task_id=task["id"],
+        manifest_path=manifest_path,
+        metrics=dict(parent.get("metrics") or {}),
+        tags=list(dict.fromkeys([*(parent.get("tags") or []), "scene-revision", "scene-clone", "runtime-validated"])),
+        cache_state="local",
+    )
+    _task_progress(store, task, 94, "新场景已加入场景库", "复制版本已可预览、编辑资产并用于后续仿真流程")
+    return {"scene_id": scene["id"], "parent_scene_id": parent["id"], "scene_path": scene["path"], "manifest_path": str(manifest_path), "runtime_validation": validation, "operation": "scene_cloned"}
 
 
 def run_scene_composition(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:

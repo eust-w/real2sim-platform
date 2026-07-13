@@ -311,7 +311,10 @@
             <h1>场景管理</h1>
             <p>场景管理用于查看重建结果、添加资产、仿真校验、导出，并绑定后续采集和推理。</p>
           </div>
-          <button id="validateSelectedScenes" class="primary-button">校验已选场景</button>
+          <div class="button-row page-actions">
+            <button id="createSceneLibrary" class="primary-button" type="button">新建场景</button>
+            <button id="validateSelectedScenes" type="button">校验已选场景</button>
+          </div>
         </div>
 
         <div class="scene-workbench">
@@ -354,6 +357,7 @@
             <div class="form-grid">
               <label class="span-2">目标场景<select id="assetScene"></select></label>
               <label class="span-2">数字资产<select id="assetPreset"></select></label>
+              <input id="assetInstanceId" type="hidden" value="">
               <div class="span-2 asset-source-actions"><span id="assetSourceHint">基础形状可直接加入，上传的网格会自动出现在资产库</span><button type="button" data-open-import="upload">上传新资产</button></div>
               <label>显示名称<input id="assetName" placeholder="例如茶几上的收纳盒"></label>
               <label>碰撞模式<select id="assetCollisionMode"><option value="visual_and_collision">可见并参与碰撞</option><option value="visual_only">仅可见</option><option value="collision_only">仅碰撞</option></select></label>
@@ -375,6 +379,17 @@
             </div>
           </section>
         </div>
+
+        <section class="panel scene-assets-panel">
+          <div class="panel-head">
+            <div>
+              <h2>场景资产管理</h2>
+              <p>管理当前场景中已添加的资产；编辑位置、旋转、缩放和物理属性会生成新 revision，原场景保留。</p>
+            </div>
+            <button id="resetAssetEditor" type="button">添加新资产</button>
+          </div>
+          <div id="sceneAssetInstances" class="asset-instance-list"></div>
+        </section>
 
         <section class="panel">
           <div class="panel-head">
@@ -719,6 +734,35 @@
     </form>
   </dialog>
 
+  <dialog id="sceneCreateDialog">
+    <form id="sceneCreateForm" class="dialog-card">
+      <div class="panel-head">
+        <div>
+          <h2>新建场景</h2>
+          <p>场景库中的每一条记录都来自真实任务或场景 revision，不会覆盖原场景。</p>
+        </div>
+        <button type="button" data-close-dialog="sceneCreateDialog" class="ghost-button">关闭</button>
+      </div>
+      <div class="form-grid">
+        <label class="span-2">创建方式
+          <select id="sceneCreateMode">
+            <option value="clone">复制已有场景为新版本</option>
+            <option value="reconstruct">使用已准备数据重新重建</option>
+          </select>
+        </label>
+        <label class="span-2">新场景名称<input id="sceneCreateName" required placeholder="例如 demo_2 · 茶几布局 B"></label>
+        <label class="span-2" id="sceneCloneSourceField">基础场景<select id="sceneCloneSource"></select></label>
+        <label class="span-2" id="sceneReconstructSourceField" hidden>已准备数据集<select id="sceneCreateDataset"></select></label>
+        <label>仿真校验步数<input id="sceneCreateValidationSteps" type="number" min="1" max="5000" value="60"></label>
+        <div id="sceneCreateHint" class="form-hint span-2">复制会产生独立场景版本，随后可在右侧资产管理中添加和调整物体。</div>
+      </div>
+      <menu>
+        <button type="button" data-close-dialog="sceneCreateDialog">取消</button>
+        <button id="submitSceneCreate" type="submit" class="primary-button">创建场景</button>
+      </menu>
+    </form>
+  </dialog>
+
   <dialog id="editDialog">
     <form id="editForm" class="dialog-card">
       <div class="panel-head">
@@ -753,6 +797,6 @@
   </dialog>
 
   <div id="toast" class="toast" role="status"></div>
-  <script src="/static/app.js?v=20260712-scene-composition-v5"></script>
+  <script src="/static/app.js?v=20260713-scene-library-assets-v7"></script>
 </body>
 </html>

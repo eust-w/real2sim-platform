@@ -58,6 +58,11 @@ class SceneAssetRequest(BaseModel):
     revision_name: str | None = None
 
 
+class SceneCloneRequest(BaseModel):
+    name: str | None = None
+    validation_steps: int = 60
+
+
 class SceneCompositionRobotRequest(BaseModel):
     robot_id: str
     transform: dict[str, Any] = Field(default_factory=dict)
@@ -678,6 +683,44 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
             "message": "数字资产合成任务已创建；通过 MotrixSim 与 MuJoCo 校验后会生成新场景版本",
         }
 
+    @app.patch("/api/scenes/{scene_id}/assets/{asset_id}")
+    def update_scene_asset(scene_id: str, asset_id: str, payload: SceneAssetRequest) -> dict[str, Any]:
+        try:
+            store.get_scene(scene_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="scene not found") from exc
+        params = {
+            "scene_id": scene_id,
+            "asset_id": asset_id,
+            "asset_spec": {
+                "name": payload.name,
+                "transform": payload.transform,
+                "physics": payload.physics,
+            },
+            "validation_steps": payload.validation_steps,
+            "revision_name": payload.revision_name,
+        }
+        task = _queue_task("scene_asset_update", params)
+        return {"ok": True, "scene_id": scene_id, "asset_id": asset_id, "task": _with_task_view_model(task), "message": "资产位置和属性修订任务已创建；校验通过后会生成新场景版本"}
+
+    @app.delete("/api/scenes/{scene_id}/assets/{asset_id}")
+    def delete_scene_asset(scene_id: str, asset_id: str) -> dict[str, Any]:
+        try:
+            store.get_scene(scene_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="scene not found") from exc
+        task = _queue_task("scene_asset_delete", {"scene_id": scene_id, "asset_id": asset_id, "validation_steps": 60})
+        return {"ok": True, "scene_id": scene_id, "asset_id": asset_id, "task": _with_task_view_model(task), "message": "资产删除任务已创建；原场景保留，新版本校验通过后进入场景库"}
+
+    @app.post("/api/scenes/{scene_id}/clone")
+    def clone_scene(scene_id: str, payload: SceneCloneRequest) -> dict[str, Any]:
+        try:
+            store.get_scene(scene_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="scene not found") from exc
+        task = _queue_task("scene_clone", {"scene_id": scene_id, "name": payload.name, "validation_steps": payload.validation_steps})
+        return {"ok": True, "scene_id": scene_id, "task": _with_task_view_model(task), "message": "场景复制任务已创建；完成后会进入场景库并可继续编辑"}
+
     @app.post("/api/scenes/{scene_id}/compose")
     def compose_scene(scene_id: str, payload: SceneCompositionRequest) -> dict[str, Any]:
         try:
@@ -747,7 +790,7 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
         payload = CreateTaskRequest(type=task_type, params=params)
         _validate_task_payload(payload, cfg)
         _validate_task_resources(store, payload)
-        if payload.type not in {"scene_reconstruction", "reconstruction_preflight", "media_prepare", "expert_collection", "training", "inference", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize", "hf_import", "bos_import", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "scene_composition", "simulator_validation"}:
+        if payload.type not in {"scene_reconstruction", "reconstruction_preflight", "media_prepare", "expert_collection", "training", "inference", "renderer_benchmark", "scene_cover_render", "scene_splat_optimize", "hf_import", "bos_import", "motrixsim_asset_import", "motrixsim_scene_import", "scene_asset_compose", "scene_asset_update", "scene_asset_delete", "scene_clone", "scene_composition", "simulator_validation"}:
             raise ValueError(f"unknown task type: {payload.type}")
         run_dir = cfg.runs_dir / payload.type / _next_run_name(cfg.runs_dir / payload.type, payload.type)
         return store.create_task(task_type=payload.type, params=payload.params, run_dir=run_dir)
@@ -1238,6 +1281,9 @@ def _task_type_label(task_type: str) -> str:
         "motrixsim_asset_import": "MotrixSim 资产导入",
         "motrixsim_scene_import": "MotrixSim 场景包导入",
         "scene_asset_compose": "数字资产合成",
+        "scene_asset_update": "资产位置与属性编辑",
+        "scene_asset_delete": "资产删除",
+        "scene_clone": "场景复制",
         "scene_composition": "场景组合",
         "simulator_validation": "仿真校验",
         "expert_collection": "专家采集",
@@ -1286,6 +1332,22 @@ def _validate_task_payload(payload: CreateTaskRequest, cfg: PlatformConfig) -> N
                 raise HTTPException(status_code=400, detail="asset file not found")
             if not is_path_allowed(path, cfg):
                 raise HTTPException(status_code=403, detail="asset path is outside configured import roots")
+    if payload.type in {"scene_asset_update", "scene_asset_delete"}:
+        if not params.get("scene_id") or not params.get("asset_id"):
+            raise HTTPException(status_code=400, detail=f"{payload.type} requires scene_id and asset_id")
+        if not 1 <= int(params.get("validation_steps", 60)) <= 5000:
+            raise HTTPException(status_code=400, detail="validation_steps must be between 1 and 5000")
+        if payload.type == "scene_asset_update":
+            spec = params.get("asset_spec") or {}
+            if spec.get("transform") is not None and not isinstance(spec.get("transform"), dict):
+                raise HTTPException(status_code=400, detail="asset_spec.transform must be an object")
+            if spec.get("physics") is not None and not isinstance(spec.get("physics"), dict):
+                raise HTTPException(status_code=400, detail="asset_spec.physics must be an object")
+    if payload.type == "scene_clone":
+        if not params.get("scene_id"):
+            raise HTTPException(status_code=400, detail="scene_clone requires scene_id")
+        if not 1 <= int(params.get("validation_steps", 60)) <= 5000:
+            raise HTTPException(status_code=400, detail="validation_steps must be between 1 and 5000")
     if payload.type == "scene_composition":
         if not params.get("scene_id"):
             raise HTTPException(status_code=400, detail="scene_composition requires scene_id")
@@ -1397,6 +1459,18 @@ def _validate_task_resources(store: PlatformStore, payload: CreateTaskRequest) -
                     raise HTTPException(status_code=400, detail="资产路径越出所选数据集")
                 if not candidate.is_file() or candidate.suffix.lower() not in SUPPORTED_MESH_SUFFIXES:
                     raise HTTPException(status_code=400, detail="所选数据集文件不是可导入 MotrixSim 的网格资产")
+        if payload.type in {"scene_asset_update", "scene_asset_delete", "scene_clone"}:
+            scene = store.get_scene(str(params["scene_id"]))
+            package = Path(str((scene.get("metadata") or {}).get("package") or ""))
+            if not package.is_dir() or not (package / "scene_manifest.json").is_file():
+                raise HTTPException(status_code=400, detail="所选场景不是可编辑的 MotrixSim 场景包")
+            if payload.type in {"scene_asset_update", "scene_asset_delete"}:
+                manifest = _entity_manifest(scene, fallback_kind="scene")
+                target = next((item for item in manifest.get("assets", []) if isinstance(item, dict) and str((item.get("runtime") or {}).get("body") or "") == str(params["asset_id"])), None)
+                if target is None:
+                    raise HTTPException(status_code=404, detail="scene asset not found")
+                if target.get("role") != "added_asset":
+                    raise HTTPException(status_code=400, detail="机器人和重建环境资产受保护，只能编辑场景中添加的数字资产")
         if payload.type == "scene_composition":
             scene = store.get_scene(str(params["scene_id"]))
             package = Path(str((scene.get("metadata") or {}).get("package") or ""))

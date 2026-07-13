@@ -118,6 +118,7 @@ a { color: var(--accent); text-decoration: none; }
 .page-head { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 11px; }
 .page-head h1 { margin: 0; font-size: 24px; line-height: 1.1; }
 .page-head p { max-width: 760px; margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.page-actions { padding-top: 0; justify-content: flex-end; }
 .panel { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 10px 28px rgba(0, 0, 0, .18); }
 .panel + .panel, .source-grid + .panel, .two-column + .panel, .reconstruct-grid + .panel, .scene-workbench + .panel { margin-top: 11px; }
 .panel-head { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 13px; border-bottom: 1px solid var(--line-soft); }
@@ -223,6 +224,17 @@ body.viewer-maximized { overflow: hidden; }
 .asset-source-actions { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--line-soft); border-radius: 5px; background: var(--surface-3); }
 .asset-source-actions span { min-width: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .asset-source-actions button { flex: 0 0 auto; }
+.scene-assets-panel { margin-bottom: 11px; }
+.asset-instance-list { display: grid; gap: 0; padding-top: 2px; }
+.asset-instance-row { min-height: 62px; display: grid; grid-template-columns: 28px minmax(160px, 1fr) minmax(150px, .9fr) minmax(150px, .9fr) auto; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.asset-instance-row:last-child { border-bottom: 0; }
+.asset-instance-mark { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; background: #0b2029; color: var(--accent); font-size: 10px; font-weight: 800; }
+.asset-instance-title { min-width: 0; display: grid; gap: 3px; }
+.asset-instance-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.asset-instance-title span, .asset-instance-meta { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.asset-instance-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.asset-instance-actions button { min-height: 26px; padding: 4px 7px; font-size: 10px; }
+.form-hint { align-self: center; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .toggle-field { min-height: 42px; display: flex !important; grid-template-columns: auto 1fr !important; align-items: center; justify-content: start; gap: 8px !important; padding: 0 2px; }
 .toggle-field input { width: 16px; height: 16px; margin: 0; }
 .model-card { min-height: 160px; align-content: start; }
@@ -368,6 +380,8 @@ body.composition-dragging .composition-drop-overlay { display: grid; pointer-eve
   .row-actions { justify-content: flex-start; }
   .resource-preview, .scene-preview-card .resource-preview { width: 100%; height: 112px; }
   .scene-preview-card { grid-template-columns: 1fr; }
+  .asset-instance-row { grid-template-columns: 28px minmax(0, 1fr); align-items: start; }
+  .asset-instance-meta, .asset-instance-actions { grid-column: 2; justify-content: flex-start; white-space: normal; }
   .viewer-panel iframe, #scenePreview { width: calc(100% - 26px); min-height: 390px; }
   .task-facts { grid-template-columns: 1fr; }
   .task-drawer { width: 100vw; }

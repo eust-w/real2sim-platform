@@ -414,6 +414,132 @@ def compose_scene_asset(
     }
 
 
+def revise_scene_asset(
+    package_dir: Path,
+    *,
+    asset_id: str,
+    asset_spec: dict[str, Any] | None = None,
+    delete: bool = False,
+    validation_steps: int,
+    emit: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Edit one scene-instance asset in a copied package and validate the revision.
+
+    Asset instances are identified by their runtime MJCF body name. Only assets
+    explicitly added to a scene are mutable; robot and reconstructed environment
+    entries remain protected so a user cannot accidentally invalidate the base
+    scene through the asset editor.
+    """
+    emit = emit or (lambda _message: None)
+    manifest_path = package_dir / "scene_manifest.json"
+    manifest = _read_json(manifest_path)
+    runtime_scene = _runtime_scene_from_manifest(package_dir, manifest)
+    if not runtime_scene.is_file():
+        raise FileNotFoundError(f"MotrixSim runtime scene not found: {runtime_scene}")
+
+    assets = manifest.get("assets") or []
+    target_index = next(
+        (
+            index
+            for index, item in enumerate(assets)
+            if isinstance(item, dict)
+            and str((item.get("runtime") or {}).get("body") or "") == str(asset_id)
+        ),
+        None,
+    )
+    if target_index is None:
+        raise ValueError(f"scene asset not found: {asset_id}")
+    target = assets[target_index]
+    if str(target.get("role") or "") != "added_asset":
+        raise ValueError("只有场景中添加的数字资产可以编辑或删除，机器人和重建环境受保护")
+
+    tree = ET.parse(runtime_scene)
+    root = tree.getroot()
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        raise ValueError("scene runtime file is missing <worldbody>")
+    body = next((node for node in worldbody.iter("body") if str(node.get("name") or "") == str(asset_id)), None)
+    if body is None:
+        raise ValueError(f"scene runtime body not found: {asset_id}")
+
+    if delete:
+        emit(f"Removing asset {target.get('name') or asset_id} from the scene revision")
+        parent = next((node for node in worldbody.iter() if body in list(node)), None)
+        if parent is None:
+            raise ValueError(f"scene asset body is not removable: {asset_id}")
+        parent.remove(body)
+        mesh_names = {
+            str(geom.get("mesh") or "")
+            for geom in body.iter("geom")
+            if str(geom.get("mesh") or "")
+        }
+        asset_node = root.find("asset")
+        if asset_node is not None:
+            for mesh in list(asset_node.findall("mesh")):
+                if str(mesh.get("name") or "") in mesh_names or str(mesh.get("name") or "").startswith(f"{asset_id}_"):
+                    asset_node.remove(mesh)
+        manifest["assets"] = [item for index, item in enumerate(assets) if index != target_index]
+        changed_asset = {"id": asset_id, "name": target.get("name"), "deleted": True}
+        operation = "deleted"
+    else:
+        spec = asset_spec or {}
+        transform = normalize_transform(spec.get("transform") or target.get("transform") or {})
+        physics = normalize_physics(spec.get("physics") or target.get("physics") or {})
+        name = str(spec.get("name") or target.get("name") or asset_id).strip()
+        compiler = root.find("compiler")
+        compiler_angle = str(compiler.attrib.get("angle", "degree") if compiler is not None else "degree").lower()
+        euler = transform["rotation_euler_degrees"]
+        if compiler_angle.startswith("rad"):
+            euler = [math.radians(value) for value in euler]
+        body.set("pos", _numbers(transform["translation"]))
+        body.set("euler", _numbers(euler))
+        freejoint = body.find("freejoint")
+        if physics["dynamic"] and freejoint is None:
+            ET.SubElement(body, "freejoint", {"name": f"{asset_id}_joint"})
+        elif not physics["dynamic"] and freejoint is not None:
+            body.remove(freejoint)
+        for geom in body.iter("geom"):
+            geom.set("friction", _numbers(physics["friction"]))
+            geom.set("contype", "0" if physics["collision_mode"] == "visual_only" else "1")
+            geom.set("conaffinity", "0" if physics["collision_mode"] == "visual_only" else "1")
+            geom.set("group", "2" if physics["collision_mode"] == "visual_only" else "3")
+            geom.set("rgba", _numbers(physics["rgba"]))
+            if physics["dynamic"]:
+                geom.set("mass", f"{physics['mass']:.9g}")
+            else:
+                geom.attrib.pop("mass", None)
+            primitive = str(geom.get("type") or "")
+            if primitive in SUPPORTED_PRIMITIVES:
+                geom.attrib.update(_primitive_geom(primitive, [dimension * scale for dimension, scale in zip(physics["dimensions"], transform["scale"], strict=True)]))
+        target.update({"name": name, "transform": transform, "physics": physics, "updated_at": _utc_now()})
+        changed_asset = {"id": asset_id, "name": name, "deleted": False, "transform": transform, "physics": physics}
+        operation = "updated"
+
+    _indent_xml(root)
+    tree.write(runtime_scene, encoding="utf-8", xml_declaration=True)
+    emit("Validating the revised scene with MuJoCo and MotrixSim")
+    validation = validate_runtime_scene(runtime_scene, steps=validation_steps)
+    validation_path = package_dir / "reports" / f"asset_{_safe_name(asset_id)}_{operation}_validation.json"
+    _write_json(validation_path, validation)
+    if not validation["ok"]:
+        failed = [name for name in ("mujoco", "motrixsim") if not validation[name]["ok"]]
+        raise RuntimeError("Scene asset revision failed runtime validation: " + "; ".join(f"{name}: {validation[name].get('error', 'unknown error')}" for name in failed))
+
+    manifest["updated_at"] = _utc_now()
+    manifest["asset_editing"] = {**(manifest.get("asset_editing") or {}), "enabled": True, "revisioned": True, "last_operation": operation, "last_asset_id": asset_id}
+    manifest.setdefault("simulator_artifacts", {}).setdefault("motrixsim", {})["validated"] = validation["motrixsim"]["ok"]
+    manifest.setdefault("simulator_artifacts", {}).setdefault("mujoco", {})["validated"] = validation["mujoco"]["ok"]
+    _write_json(manifest_path, manifest)
+    return {
+        "manifest_path": str(manifest_path),
+        "runtime_scene": str(runtime_scene),
+        "validation_path": str(validation_path),
+        "validation": validation,
+        "asset": changed_asset,
+        "operation": operation,
+    }
+
+
 def composition_asset_catalog() -> list[dict[str, Any]]:
     return [deepcopy(COMPOSITION_ASSET_RECIPES[key]) for key in sorted(COMPOSITION_ASSET_RECIPES)]
 
