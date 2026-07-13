@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260713-scene-library-assets-v7";
+const STATIC_VERSION = "20260713-asset-delete-routes-v8";
 
 const state = {
   datasets: [],
@@ -54,6 +54,43 @@ const taskScopes = {
   inferTaskList: ["inference"],
 };
 
+// Keep each business area addressable and refresh-safe while retaining the
+// existing static-shell deployment. Nginx falls back to index.html for these
+// paths, so users can bookmark or share a page without a second frontend app.
+const TAB_ROUTES = Object.freeze({
+  overview: "/",
+  data: "/data",
+  reconstruct: "/reconstruct",
+  scenes: "/scenes",
+  compose: "/compose",
+  collect: "/collect",
+  train: "/train",
+  infer: "/infer",
+});
+
+const TAB_TITLES = Object.freeze({
+  overview: "总览",
+  data: "数据管理",
+  reconstruct: "场景重建",
+  scenes: "场景管理",
+  compose: "场景组合",
+  collect: "数据采集",
+  train: "模型训练",
+  infer: "在线推理",
+});
+
+function tabFromLocation() {
+  const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
+  return Object.entries(TAB_ROUTES).find(([, route]) => route === pathname)?.[0] || "overview";
+}
+
+function syncTabUrl(tabId, { replace = false } = {}) {
+  const route = TAB_ROUTES[tabId] || TAB_ROUTES.overview;
+  if (window.location.pathname === route && !window.location.search) return;
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method]({ tab: tabId }, "", route);
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", ...options });
   const type = response.headers.get("content-type") || "";
@@ -98,6 +135,7 @@ async function bootstrap() {
   state.recipes = await api("/api/recipes");
   applyRuntimeOptions();
   showApp();
+  switchTab(tabFromLocation(), { syncUrl: false });
   await refresh();
   startTaskEvents();
   clearInterval(state.refreshTimer);
@@ -231,9 +269,12 @@ function setActionAvailability(id, enabled, reason) {
   button.title = enabled ? "" : reason;
 }
 
-function switchTab(tabId) {
+function switchTab(tabId, { syncUrl = true, replace = false } = {}) {
+  if (!TAB_ROUTES[tabId]) tabId = "overview";
+  if (syncUrl) syncTabUrl(tabId, { replace });
   document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tabId));
   document.querySelectorAll(".page").forEach((page) => page.classList.toggle("active", page.id === tabId));
+  document.title = `Real2Sim · ${TAB_TITLES[tabId]}`;
   document.querySelectorAll("iframe").forEach((frame) => {
     frame.contentWindow?.postMessage({ type: "real2sim-viewer-visibility", visible: frame.closest(".page")?.id === tabId }, location.origin);
   });
@@ -2244,6 +2285,7 @@ function bindEvents() {
   $("openUsers")?.addEventListener("click", openUserManager);
   $("createUserForm")?.addEventListener("submit", createUser);
   document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => switchTab(button.dataset.tab)));
+  window.addEventListener("popstate", () => switchTab(tabFromLocation(), { syncUrl: false }));
   $("closeDrawer")?.addEventListener("click", closeDrawer);
   $("importForm")?.addEventListener("submit", submitImport);
   $("editForm")?.addEventListener("submit", saveEdit);

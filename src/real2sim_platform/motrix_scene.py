@@ -464,9 +464,24 @@ def revise_scene_asset(
 
     if delete:
         emit(f"Removing asset {target.get('name') or asset_id} from the scene revision")
-        parent = next((node for node in worldbody.iter() if body in list(node)), None)
+        # ElementTree compares elements by identity in current CPython builds,
+        # but the explicit identity check also works with alternate XML
+        # implementations and avoids deleting the wrong nested body.
+        parent = next(
+            (
+                node
+                for node in worldbody.iter()
+                if any(child is body for child in list(node))
+            ),
+            None,
+        )
         if parent is None:
             raise ValueError(f"scene asset body is not removable: {asset_id}")
+        removed_joint_names = {
+            str(node.get("name") or "")
+            for node in body.iter()
+            if node.tag in {"joint", "freejoint"} and node.get("name")
+        }
         parent.remove(body)
         mesh_names = {
             str(geom.get("mesh") or "")
@@ -478,6 +493,31 @@ def revise_scene_asset(
             for mesh in list(asset_node.findall("mesh")):
                 if str(mesh.get("name") or "") in mesh_names or str(mesh.get("name") or "").startswith(f"{asset_id}_"):
                     asset_node.remove(mesh)
+
+        # A deleted body can be referenced by cameras, equality constraints or
+        # keyframes. Leaving those references behind makes an otherwise valid
+        # revision fail at the runtime loader. A fixed camera is still useful,
+        # so only remove the target-body mode when its target disappears.
+        for camera in root.iter("camera"):
+            if str(camera.get("target") or "") == str(asset_id):
+                camera.attrib.pop("target", None)
+                if camera.get("mode") == "targetbody":
+                    camera.attrib.pop("mode", None)
+
+        equality = root.find("equality")
+        if equality is not None and removed_joint_names:
+            for constraint in list(equality):
+                if any(str(value or "") in removed_joint_names for value in constraint.attrib.values()):
+                    equality.remove(constraint)
+
+        # Keyframe qpos/qvel arrays are indexed by the model's joints. Since
+        # the deleted asset may own a freejoint (7 qpos values), preserving an
+        # old keyframe can make nqpos inconsistent. The runtime can safely
+        # start from its model defaults when no keyframe block remains.
+        if removed_joint_names:
+            keyframe = root.find("keyframe")
+            if keyframe is not None:
+                root.remove(keyframe)
         manifest["assets"] = [item for index, item in enumerate(assets) if index != target_index]
         changed_asset = {"id": asset_id, "name": target.get("name"), "deleted": True}
         operation = "deleted"

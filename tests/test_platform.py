@@ -13,6 +13,7 @@ from PIL import Image
 
 from real2sim_platform.adapters import _export_3dgs_rgb_fallback, collect_task_reports
 from real2sim_platform.config import PlatformConfig
+from real2sim_platform import motrix_scene
 from real2sim_platform.server import create_app
 from real2sim_platform.store import PlatformStore
 
@@ -275,6 +276,67 @@ def test_scene_library_clone_and_asset_revision_requests_are_real_tasks(tmp_path
     delete = client.delete(f"/api/scenes/{scene['id']}/assets/added_box")
     assert delete.status_code == 200, delete.text
     assert delete.json()["task"]["type"] == "scene_asset_delete"
+
+
+def test_scene_asset_delete_cleans_runtime_references(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    package = tmp_path / "editable_package"
+    runtime_dir = package / "simulator_assets"
+    runtime_dir.mkdir(parents=True)
+    runtime = runtime_dir / "scene.xml"
+    runtime.write_text(
+        """<mujoco model="fixture">
+  <worldbody>
+    <body name="base_link"><geom type="box" size="0.1 0.1 0.1" /></body>
+    <body name="pick_cube"><freejoint name="pick_cube_free" /><geom type="box" size="0.03 0.03 0.03" /></body>
+    <camera name="overview" mode="targetbody" target="pick_cube" pos="1 -1 1" />
+  </worldbody>
+  <equality><joint joint1="pick_cube_free" joint2="base_joint" /></equality>
+  <keyframe><key name="home" qpos="0 0 0 0 0 0 0" qvel="0 0 0 0 0 0 0" /></keyframe>
+</mujoco>""",
+        encoding="utf-8",
+    )
+    (package / "scene_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": "real2sim.scene_manifest.v3",
+                "assets": [
+                    {"name": "抓取方块", "role": "added_asset", "runtime": {"body": "pick_cube"}},
+                    {"name": "机器人", "role": "robot", "runtime": {"body": "base_link"}},
+                ],
+                "simulator_artifacts": {"motrixsim": {"runtime_scene": str(runtime)}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        motrix_scene,
+        "validate_runtime_scene",
+        lambda _runtime, steps: {
+            "steps": steps,
+            "mujoco": {"ok": True},
+            "motrixsim": {"ok": True},
+            "ok": True,
+        },
+    )
+
+    result = motrix_scene.revise_scene_asset(
+        package,
+        asset_id="pick_cube",
+        delete=True,
+        validation_steps=1,
+    )
+
+    assert result["operation"] == "deleted"
+    root = __import__("xml.etree.ElementTree", fromlist=["parse"]).parse(runtime).getroot()
+    assert root.find(".//body[@name='pick_cube']") is None
+    camera = root.find(".//camera[@name='overview']")
+    assert camera is not None
+    assert camera.get("target") is None
+    assert camera.get("mode") is None
+    assert root.find("keyframe") is None
+    assert root.find("equality") is not None and list(root.find("equality")) == []
+    manifest = json.loads((package / "scene_manifest.json").read_text(encoding="utf-8"))
+    assert all(item.get("runtime", {}).get("body") != "pick_cube" for item in manifest["assets"])
 
 
 def test_scene_runtime_metadata_update(tmp_path: Path) -> None:
