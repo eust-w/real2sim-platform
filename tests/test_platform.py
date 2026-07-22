@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from real2sim_platform.adapters import _export_3dgs_rgb_fallback, collect_task_reports
+from real2sim_platform.adapters import _export_3dgs_rgb_fallback, _register_imported_scene_assets, collect_task_reports
 from real2sim_platform.config import PlatformConfig
 from real2sim_platform import motrix_scene
 from real2sim_platform.server import create_app
@@ -227,6 +227,56 @@ def test_scene_asset_request_queues_real_revision_task_from_catalog(tmp_path: Pa
     assert payload["task"]["params"]["source"] == catalog_asset["source"]
     assert payload["task"]["params"]["physics"]["dynamic"] is True
     assert len(client.get("/api/scenes").json()) == 1
+
+
+def test_imported_scene_assets_are_standalone_crud_items(tmp_path: Path) -> None:
+    package = tmp_path / "runs" / "import_task" / "scene_package"
+    package.mkdir(parents=True)
+    visual = package / "viewer" / "environment_visual.glb"
+    visual.parent.mkdir()
+    visual.write_bytes(b"glb fixture")
+    runtime = package / "simulator_assets" / "scene.xml"
+    runtime.parent.mkdir()
+    runtime.write_text("<mujoco/>", encoding="utf-8")
+    manifest = {
+        "assets": [
+            {"name": "环境视觉", "path": str(visual), "role": "visual_fallback", "kind": "mesh", "autoload": False},
+            {"name": "运行时场景", "path": str(runtime), "role": "motrixsim_runtime", "kind": "simulator", "autoload": False},
+        ]
+    }
+    store = PlatformStore(tmp_path / "workspace" / "state.db")
+    registered = _register_imported_scene_assets(store, scene_id="scene-1", package_dir=package, manifest=manifest, manifest_path=package / "scene_manifest.json")
+    assert len(registered) == 1
+    assert registered[0]["source_type"] == "scene_asset"
+    assert registered[0]["scene_id"] == "scene-1"
+    assert store.list_digital_assets()[0]["path"] == str(visual)
+    renamed = store.update_digital_asset(registered[0]["id"], name="环境视觉层")
+    assert renamed["name"] == "环境视觉层"
+    store.delete_digital_asset(registered[0]["id"])
+    assert visual.is_file()
+    assert store.list_digital_assets() == []
+
+
+def test_digital_asset_api_registers_dataset_file_and_deletes_only_index(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "asset_dataset"
+    dataset_root.mkdir()
+    mesh = dataset_root / "table.obj"
+    mesh.write_text("v 0 0 0\nv .1 0 0\nv 0 .1 0\nf 1 2 3\n", encoding="utf-8")
+    cfg = PlatformConfig(app_root=ROOT, workspace_dir=tmp_path / "workspace", allowed_path_roots=(tmp_path,))
+    client = TestClient(create_app(cfg))
+    dataset = client.post("/api/datasets/import-path", json={"path": str(dataset_root), "name": "asset source"}).json()
+    created = client.post("/api/assets", json={"dataset_id": dataset["id"], "relative_path": "table.obj", "name": "茶几资产"})
+    assert created.status_code == 200, created.text
+    asset = created.json()
+    assert asset["managed"] is True
+    assert asset["capabilities"]["composition_supported"] is True
+    assert client.get(f"/api/assets/{asset['id']}").json()["name"] == "茶几资产"
+    renamed = client.patch(f"/api/assets/{asset['id']}", json={"name": "茶几资产 v2"})
+    assert renamed.json()["name"] == "茶几资产 v2"
+    assert client.get(f"/api/assets/{asset['id']}/preview").status_code == 200
+    assert client.delete(f"/api/assets/{asset['id']}").json()["ok"] is True
+    assert mesh.is_file()
+    assert client.get(f"/api/assets/{asset['id']}").status_code == 404
 
 
 def test_scene_library_clone_and_asset_revision_requests_are_real_tasks(tmp_path: Path) -> None:

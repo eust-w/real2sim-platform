@@ -97,6 +97,18 @@ class UpdateEntityRequest(BaseModel):
     version: str | None = None
 
 
+class CreateDigitalAssetRequest(BaseModel):
+    dataset_id: str
+    relative_path: str
+    name: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class UpdateDigitalAssetRequest(BaseModel):
+    name: str | None = None
+    tags: list[str] | None = None
+
+
 class UpdateTaskRequest(BaseModel):
     params: dict[str, Any]
 
@@ -622,6 +634,74 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
     @app.get("/api/assets")
     def list_digital_assets() -> list[dict[str, Any]]:
         return _digital_asset_catalog(store)
+
+    @app.post("/api/assets")
+    def create_digital_asset(payload: CreateDigitalAssetRequest) -> dict[str, Any]:
+        try:
+            dataset = store.get_dataset(payload.dataset_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="dataset not found") from exc
+        root = Path(dataset["path"]).resolve()
+        candidate = (root / payload.relative_path).resolve()
+        if candidate == root or root not in candidate.parents:
+            raise HTTPException(status_code=400, detail="资产路径越出所选数据集")
+        if not candidate.is_file() or candidate.suffix.lower() not in _SUPPORTED_DIGITAL_ASSET_SUFFIXES:
+            raise HTTPException(status_code=400, detail="所选文件不是可登记的数字资产")
+        item_id = hashlib.sha256(f"dataset:{dataset['id']}:{candidate.relative_to(root).as_posix()}".encode("utf-8")).hexdigest()[:24]
+        item = store.upsert_digital_asset(
+            item_id=item_id,
+            name=payload.name or candidate.stem.replace("_", " "),
+            path=candidate,
+            source_type="dataset_asset",
+            source_uri=dataset.get("storage_uri") or dataset.get("source_uri") or str(root),
+            dataset_id=dataset["id"],
+            relative_path=candidate.relative_to(root).as_posix(),
+            asset_format=candidate.suffix.lower().lstrip("."),
+            preview_path=candidate if candidate.suffix.lower() in _SUPPORTED_BROWSER_ASSET_SUFFIXES else None,
+            metadata={"registered_manually": True, "composition_supported": candidate.suffix.lower() in SUPPORTED_MESH_SUFFIXES},
+            tags=payload.tags,
+        )
+        return _digital_asset_view_model(item)
+
+    @app.get("/api/assets/{asset_id}")
+    def get_digital_asset(asset_id: str) -> dict[str, Any]:
+        try:
+            item = store.get_digital_asset(asset_id)
+        except KeyError:
+            item = next((candidate for candidate in _digital_asset_catalog(store) if candidate.get("id") == asset_id), None)
+            if item is None:
+                raise HTTPException(status_code=404, detail="asset not found")
+            return item
+        return _digital_asset_view_model(item)
+
+    @app.patch("/api/assets/{asset_id}")
+    def update_digital_asset(asset_id: str, payload: UpdateDigitalAssetRequest) -> dict[str, Any]:
+        try:
+            item = store.get_digital_asset(asset_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="asset is not managed") from exc
+        if payload.name is None and payload.tags is None:
+            return _digital_asset_view_model(item)
+        return _digital_asset_view_model(store.update_digital_asset(asset_id, name=payload.name, tags=payload.tags))
+
+    @app.delete("/api/assets/{asset_id}")
+    def delete_digital_asset(asset_id: str) -> dict[str, Any]:
+        try:
+            store.delete_digital_asset(asset_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="asset is not managed") from exc
+        return {"ok": True, "message": "已删除资产索引，不删除源文件或场景包文件"}
+
+    @app.get("/api/assets/{asset_id}/preview")
+    def preview_digital_asset(asset_id: str):
+        try:
+            item = store.get_digital_asset(asset_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="asset not found") from exc
+        path = Path(item["path"]).resolve()
+        if not path.is_file() or not is_path_allowed(path, cfg):
+            raise HTTPException(status_code=404, detail="asset preview is unavailable")
+        return FileResponse(path, filename=path.name)
 
     @app.get("/api/robots")
     def list_robots() -> list[dict[str, Any]]:
@@ -1525,6 +1605,10 @@ def _digital_asset_catalog(store: PlatformStore) -> list[dict[str, Any]]:
         }
         for primitive in sorted(SUPPORTED_PRIMITIVES)
     ]
+    all_managed_records = store.list_digital_assets(include_deleted=True)
+    managed = [_digital_asset_view_model(item) for item in all_managed_records if not item.get("deleted_at")]
+    items.extend(managed)
+    managed_paths = {str(Path(item.get("path") or "").resolve()) for item in all_managed_records}
     for dataset in store.list_datasets():
         root = Path(dataset["path"])
         if not root.is_dir():
@@ -1540,6 +1624,8 @@ def _digital_asset_catalog(store: PlatformStore) -> list[dict[str, Any]]:
                 continue
             suffix = candidate.suffix.lower()
             if suffix not in SUPPORTED_MESH_SUFFIXES:
+                continue
+            if str(candidate) in managed_paths:
                 continue
             identifier = hashlib.sha256(f"dataset:{dataset['id']}:{relative.as_posix()}".encode("utf-8")).hexdigest()[:24]
             items.append(
@@ -1560,9 +1646,47 @@ def _digital_asset_catalog(store: PlatformStore) -> list[dict[str, Any]]:
                         "dynamic": True,
                         "collision": True,
                     },
+                    "managed": False,
+                    "editable": False,
                 }
             )
     return items
+
+
+_SUPPORTED_BROWSER_ASSET_SUFFIXES = {".obj", ".glb", ".gltf", ".ply", ".spz", ".splat", ".ksplat", ".sog", ".png", ".jpg", ".jpeg", ".webp"}
+_SUPPORTED_DIGITAL_ASSET_SUFFIXES = SUPPORTED_MESH_SUFFIXES | {".spz", ".splat", ".ksplat", ".sog"}
+
+
+def _digital_asset_view_model(item: dict[str, Any]) -> dict[str, Any]:
+    path = Path(str(item.get("path") or ""))
+    suffix = path.suffix.lower()
+    metadata = dict(item.get("metadata") or {})
+    preview_path = Path(str(item.get("preview_path") or ""))
+    preview_url = _workspace_public_url(preview_path if preview_path.is_file() else path) if suffix in _SUPPORTED_BROWSER_ASSET_SUFFIXES else ""
+    if not preview_url and suffix in _SUPPORTED_BROWSER_ASSET_SUFFIXES and item.get("id"):
+        preview_url = f"/api/assets/{item['id']}/preview"
+    return {
+        **item,
+        "managed": True,
+        "editable": True,
+        "size_bytes": path.stat().st_size if path.is_file() else 0,
+        "preview_url": preview_url,
+        "url": preview_url,
+        "source": {
+            "type": item.get("source_type"),
+            "dataset_id": item.get("dataset_id"),
+            "scene_id": item.get("scene_id"),
+            "relative_path": item.get("relative_path") or path.name,
+            "asset_id": item.get("id"),
+        },
+        "capabilities": {
+            "browser_preview": suffix in _SUPPORTED_BROWSER_ASSET_SUFFIXES,
+            "motrixsim_physics": bool(metadata.get("composition_supported", False)),
+            "composition_supported": bool(metadata.get("composition_supported", False)),
+            "dynamic": True,
+            "collision": bool(metadata.get("composition_supported", False)),
+        },
+    }
 
 
 def _robot_catalog(cfg: PlatformConfig) -> list[dict[str, Any]]:

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Real2Sim 资产预览</title>
+  <link rel="icon" href="data:,">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; overflow: hidden; background: #081014; color: #e8f2f1; font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #panel { position: fixed; z-index: 5; left: 16px; top: 16px; width: min(420px, calc(100vw - 32px)); padding: 14px 16px; border: 1px solid #2b5b5f; border-radius: 10px; background: rgba(8, 17, 22, .92); box-shadow: 0 16px 40px rgba(0,0,0,.3); }
+    #panel strong { display: block; font-size: 16px; }
+    #meta, #status { margin-top: 6px; color: #a8c2c2; overflow-wrap: anywhere; }
+    #status { color: #46ddc2; }
+    #status.error { color: #ff8277; }
+    #back { margin-top: 12px; border: 1px solid #3a7774; border-radius: 6px; padding: 7px 10px; background: #123237; color: #e8f2f1; cursor: pointer; }
+    @media (max-width: 640px) { #panel { left: 8px; top: 8px; width: calc(100vw - 16px); } }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "/static/vendor/three/three.module.js", "three/addons/": "/static/vendor/three/addons/" } }
+  </script>
+</head>
+<body>
+  <section id="panel" aria-live="polite">
+    <strong id="title">资产预览</strong>
+    <div id="meta">正在读取资产清单</div>
+    <div id="status">加载中</div>
+    <button id="back" type="button">返回平台</button>
+  </section>
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+    import { PLYLoader } from "three/addons/loaders/PLYLoader.js";
+
+    const title = document.getElementById("title");
+    const meta = document.getElementById("meta");
+    const status = document.getElementById("status");
+    const params = new URLSearchParams(location.search);
+    const assetId = params.get("asset_id");
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setClearColor(0x081014, 1);
+    document.body.appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, .01, 1000);
+    camera.position.set(2.2, 1.6, 2.2);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 0, 0);
+    scene.add(new THREE.GridHelper(4, 16, 0x2f6d68, 0x24313a));
+    scene.add(new THREE.AxesHelper(1.1));
+    const lights = new THREE.Group();
+    const key = new THREE.DirectionalLight(0xffffff, 1.7);
+    key.position.set(3, 4, 2);
+    lights.add(key, new THREE.AmbientLight(0x9fb6c8, .8));
+    scene.add(lights);
+    let object = null;
+
+    document.getElementById("back").addEventListener("click", () => window.close() || (location.href = "/scenes"));
+    addEventListener("resize", () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    function fail(message) {
+      status.textContent = message;
+      status.classList.add("error");
+    }
+
+    function fit(target) {
+      const box = new THREE.Box3().setFromObject(target);
+      if (box.isEmpty()) return;
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const radius = Math.max(size.length() * .65, .2);
+      target.position.sub(center);
+      camera.position.set(radius * 1.7, radius * 1.1, radius * 1.7);
+      camera.near = Math.max(radius / 1000, .001);
+      camera.far = Math.max(radius * 100, 100);
+      camera.updateProjectionMatrix();
+      controls.target.set(0, 0, 0);
+      controls.update();
+    }
+
+    async function loadAsset(asset) {
+      const url = asset.preview_url || asset.url;
+      if (!url) throw new Error("该资产没有可访问的预览文件");
+      const suffix = String(asset.format || asset.name || "").toLowerCase().split(".").pop();
+      if (["spz", "splat", "ksplat", "sog"].includes(suffix)) {
+        const spark = await import("/static/vendor/spark.module.min.js");
+        if (!spark.SparkRenderer || !spark.SplatMesh) throw new Error("Spark bundle 未提供 SplatMesh");
+        const sparkRenderer = new spark.SparkRenderer({ renderer });
+        scene.add(sparkRenderer);
+        const splat = new spark.SplatMesh({ url });
+        scene.add(splat);
+        await splat.initialized;
+        status.textContent = "Spark 已加载 · 可拖动鼠标旋转、滚轮缩放";
+        return;
+      }
+      if (suffix === "glb" || suffix === "gltf") {
+        const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+        object = (await new GLTFLoader().loadAsync(url)).scene;
+      } else if (suffix === "obj") {
+        object = await new OBJLoader().loadAsync(url);
+      } else if (suffix === "ply") {
+        const geometry = await new PLYLoader().loadAsync(url);
+        geometry.computeVertexNormals();
+        object = new THREE.Points(geometry, new THREE.PointsMaterial({ size: .012, vertexColors: Boolean(geometry.getAttribute("color")), color: 0x9fe7d9 }));
+      } else {
+        throw new Error(`浏览器暂不支持 .${suffix} 独立预览`);
+      }
+      scene.add(object);
+      fit(object);
+      status.textContent = "Three.js 已加载 · 可拖动鼠标旋转、滚轮缩放";
+    }
+
+    async function main() {
+      if (!assetId) return fail("缺少资产标识");
+      try {
+        const response = await fetch(`/api/assets/${encodeURIComponent(assetId)}`);
+        if (!response.ok) throw new Error("资产不存在或已删除");
+        const asset = await response.json();
+        title.textContent = asset.name || "资产预览";
+        meta.textContent = `${String(asset.format || "未知格式").toUpperCase()} · ${asset.source_type || "资产"} · ${asset.size_bytes ? Math.round(asset.size_bytes / 1024 / 1024 * 10) / 10 + " MB" : "内置"}`;
+        await loadAsset(asset);
+      } catch (error) {
+        fail(error.message || String(error));
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+    main();
+  </script>
+</body>
+</html>

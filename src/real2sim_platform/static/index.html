@@ -52,7 +52,7 @@
         <button class="tab" data-tab="data">数据管理</button>
         <button class="tab" data-tab="reconstruct">场景重建</button>
         <button class="tab" data-tab="scenes">场景管理</button>
-        <button class="tab" data-tab="compose">场景组合</button>
+        <button class="tab" data-tab="compose">情景预制</button>
         <button class="tab" data-tab="collect">数据采集</button>
         <button class="tab" data-tab="train">模型训练</button>
         <button class="tab" data-tab="infer">在线推理</button>
@@ -309,7 +309,7 @@
         <div class="page-head">
           <div>
             <h1>场景管理</h1>
-            <p>场景管理用于查看重建结果、添加资产、仿真校验、导出，并绑定后续采集和推理。</p>
+            <p>场景管理只负责基础场景、导入产物和独立资产的查看与治理；机器人、物体布置和物理属性请在“情景预制”中完成。</p>
           </div>
           <div class="button-row page-actions">
             <button id="createSceneLibrary" class="primary-button" type="button">新建场景</button>
@@ -349,34 +349,12 @@
           <section class="panel asset-editor-panel">
             <div class="panel-head">
               <div>
-                <h2>数字资产编辑</h2>
-                <p>从资产库选择物体或基础形状，保存后生成通过仿真校验的新版本</p>
+                <h2>独立资产库</h2>
+                <p>导入空间包后自动登记；这里的重命名和删除只影响资产索引，不会改动基础场景文件。</p>
               </div>
-              <button id="addSceneAsset" class="primary-button">保存为新版本</button>
+              <button type="button" data-open-import="upload">导入资产数据</button>
             </div>
-            <div class="form-grid">
-              <label class="span-2">目标场景<select id="assetScene"></select></label>
-              <label class="span-2">数字资产<select id="assetPreset"></select></label>
-              <input id="assetInstanceId" type="hidden" value="">
-              <div class="span-2 asset-source-actions"><span id="assetSourceHint">基础形状可直接加入，上传的网格会自动出现在资产库</span><button type="button" data-open-import="upload">上传新资产</button></div>
-              <label>显示名称<input id="assetName" placeholder="例如茶几上的收纳盒"></label>
-              <label>碰撞模式<select id="assetCollisionMode"><option value="visual_and_collision">可见并参与碰撞</option><option value="visual_only">仅可见</option><option value="collision_only">仅碰撞</option></select></label>
-              <label class="toggle-field"><input id="assetDynamic" type="checkbox"> 可运动物体</label>
-              <label>质量（kg）<input id="assetMass" type="number" min="0.001" step="0.01" value="0.25"></label>
-              <label>长度（m）<input id="assetSizeX" type="number" min="0.001" step="0.01" value="0.10"></label>
-              <label>宽度（m）<input id="assetSizeY" type="number" min="0.001" step="0.01" value="0.10"></label>
-              <label>高度（m）<input id="assetSizeZ" type="number" min="0.001" step="0.01" value="0.10"></label>
-              <label>缩放 X<input id="assetScaleX" type="number" min="0.001" step="0.01" value="1"></label>
-              <label>缩放 Y<input id="assetScaleY" type="number" min="0.001" step="0.01" value="1"></label>
-              <label>缩放 Z<input id="assetScaleZ" type="number" min="0.001" step="0.01" value="1"></label>
-              <label>位置 X<input id="assetPosX" type="number" step="0.01" value="0"></label>
-              <label>位置 Y<input id="assetPosY" type="number" step="0.01" value="0"></label>
-              <label>位置 Z<input id="assetPosZ" type="number" step="0.01" value="0"></label>
-              <label>旋转 X（度）<input id="assetRotX" type="number" step="1" value="0"></label>
-              <label>旋转 Y（度）<input id="assetRotY" type="number" step="1" value="0"></label>
-              <label>旋转 Z（度）<input id="assetRotZ" type="number" step="1" value="0"></label>
-              <label>仿真校验步数<input id="assetValidationSteps" type="number" min="1" max="5000" value="60"></label>
-            </div>
+            <div id="standaloneAssetList" class="resource-table compact-table"></div>
           </section>
         </div>
 
@@ -384,9 +362,9 @@
           <div class="panel-head">
             <div>
               <h2>场景资产管理</h2>
-              <p>管理当前场景中已添加的资产；编辑位置、旋转、缩放和物理属性会生成新 revision，原场景保留。</p>
+              <p>组合场景中的实例只读展示；要修改位置、旋转、缩放和物理属性，请进入“情景预制”生成新版本。</p>
             </div>
-            <button id="resetAssetEditor" type="button">添加新资产</button>
+            <button id="goComposeFromScene" type="button">进入情景预制</button>
           </div>
           <div id="sceneAssetInstances" class="asset-instance-list"></div>
         </section>
@@ -395,7 +373,7 @@
           <div class="panel-head">
             <div>
               <h2>资产清单</h2>
-              <p>点云、网格、纹理、相机和仿真产物</p>
+            <p>当前基础场景的原始点云、网格、碰撞体和运行时报告</p>
             </div>
           </div>
           <div id="assetRail" class="asset-grid"></div>
@@ -405,8 +383,8 @@
       <section id="compose" class="page">
         <div class="page-head">
           <div>
-            <h1>场景组合</h1>
-            <p>选择基础场景与机器人，将真实数字资产拖入三维画布；保存后生成可测试、可采集的 MotrixSim 场景版本。</p>
+            <h1>情景预制</h1>
+            <p>选择基础场景，拖入机器人和独立资产，设置位姿与物理属性；保存后生成可测试、可采集的 MotrixSim 场景版本。</p>
           </div>
           <button id="loadPickPlacePreset" type="button">加载 Pick-Place 预设</button>
         </div>

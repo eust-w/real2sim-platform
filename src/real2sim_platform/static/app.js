@@ -1,4 +1,4 @@
-const STATIC_VERSION = "20260713-asset-delete-routes-v8";
+const STATIC_VERSION = "20260713-standalone-assets-v1";
 
 const state = {
   datasets: [],
@@ -73,7 +73,7 @@ const TAB_TITLES = Object.freeze({
   data: "数据管理",
   reconstruct: "场景重建",
   scenes: "场景管理",
-  compose: "场景组合",
+  compose: "情景预制",
   collect: "数据采集",
   train: "模型训练",
   infer: "在线推理",
@@ -237,6 +237,7 @@ function renderAll() {
   renderDatasetList();
   renderReconstructDatasetCards();
   renderSceneList();
+  renderStandaloneAssetList();
   if (activePageId() === "compose") renderComposition();
   renderPreflightSummary();
   renderCollectionDatasets();
@@ -415,11 +416,38 @@ function renderSceneList() {
       ["预览", `data-scene-viewer="${item.id}"`],
       ["生成封面", `data-scene-cover="${item.id}"`],
       ["优化3DGS", `data-scene-splat-optimize="${item.id}"`],
-      ["加资产", `data-scene-add="${item.id}"`],
+      ["进入情景预制", `data-scene-compose="${item.id}"`],
       ["清单", `data-view-json="/api/scenes/${item.id}/manifest"`],
     ],
   })).join("");
   setHtml("sceneList", rows || emptyState("暂无场景，请先在“场景重建”中创建。"));
+}
+
+function renderStandaloneAssetList() {
+  const node = $("standaloneAssetList");
+  if (!node) return;
+  const assets = state.digitalAssets.filter((asset) => asset.managed || asset.source_type === "recipe" || asset.source_type === "primitive");
+  const rows = assets.map((asset) => {
+    const suffix = String(asset.format || "").toUpperCase();
+    const source = asset.source_type === "scene_asset" ? "导入场景资产" : asset.source_type === "dataset_asset" ? "数据集资产" : asset.source_type === "recipe" ? "平台资产配方" : "基础形状";
+    const preview = asset.preview_url
+      ? `<button data-asset-preview="${escapeAttr(asset.id)}">预览</button>`
+      : `<button disabled title="该格式需要在仿真器或场景查看器中打开">仅仿真资源</button>`;
+    const compose = asset.capabilities?.composition_supported
+      ? `<button data-asset-compose="${escapeAttr(asset.id)}">用于情景</button>`
+      : "";
+    const manage = asset.managed
+      ? `<button data-library-asset-edit="${escapeAttr(asset.id)}">重命名</button><button class="danger-button" data-library-asset-delete="${escapeAttr(asset.id)}">删除</button>`
+      : "";
+    return `<div class="resource-row asset-library-row" data-asset-id="${escapeAttr(asset.id)}">
+      <div class="resource-preview asset"><span>${escapeHtml(suffix || "资产")}</span></div>
+      <div class="row-title"><strong>${escapeHtml(asset.name || "未命名资产")}</strong><span>${escapeHtml(source)}${asset.scene_id ? " · 当前场景来源" : ""}</span></div>
+      <div class="row-meta">${escapeHtml(suffix || "未知格式")} · ${asset.size_bytes ? formatBytes(asset.size_bytes) : "内置"}</div>
+      <div class="row-meta">${asset.capabilities?.browser_preview ? "可预览" : "仿真资源"} · ${asset.capabilities?.composition_supported ? "可拖入情景" : "仅独立管理"}</div>
+      <div class="row-actions">${preview}${compose}${manage}<button data-asset-details="${escapeAttr(asset.id)}">清单</button></div>
+    </div>`;
+  }).join("");
+  setHtml("standaloneAssetList", rows || emptyState("导入空间包后，系统会在这里登记可独立管理的场景资产。"));
 }
 
 function baseCompositionScenes() {
@@ -556,7 +584,11 @@ function renderComposition() {
       <span><strong>${escapeHtml(robot.name)}</strong><span>${escapeHtml(robot.description || "MotrixSim 机器人")}</span><em>${robot.id === draft.robotId ? "已加入场景" : "拖入场景"}</em></span>
     </button>`).join("") || emptyState("暂无已注册机器人。"));
 
-  const visibleAssets = state.digitalAssets.filter((asset) => asset.source_type === "recipe" || asset.source_type === "primitive" || asset.capabilities?.browser_preview).slice(0, 30);
+  const visibleAssets = state.digitalAssets.filter((asset) => {
+    if (asset.source_type === "recipe" || asset.source_type === "primitive") return true;
+    if (asset.managed) return asset.capabilities?.composition_supported === true;
+    return asset.capabilities?.browser_preview === true;
+  }).slice(0, 30);
   setHtml("composeAssetList", visibleAssets.map((asset) => {
     const inScene = draft.assets.some((item) => item.catalog_id === asset.id);
     return `<button class="composition-asset-card" type="button" draggable="true" data-compose-catalog="${escapeAttr(asset.id)}" data-in-scene="${inScene}">
@@ -1057,7 +1089,7 @@ function renderSceneAssetInstances(assets, sceneId) {
       <div class="asset-instance-title"><strong>${escapeHtml(asset.name || asset.runtime.body)}</strong><span>${escapeHtml(asset.kind || asset.format || "数字资产")} · ${escapeHtml(asset.runtime.body)}</span></div>
       <div class="asset-instance-meta">位置 ${escapeHtml(position)} · 旋转 ${escapeHtml(rotation)}</div>
       <div class="asset-instance-meta">${physics.dynamic ? "可运动" : "静态"} · ${physics.collision_mode === "visual_only" ? "仅可见" : "参与碰撞"}</div>
-      <div class="asset-instance-actions"><button data-asset-edit="${escapeAttr(asset.runtime.body)}" data-asset-scene="${escapeAttr(sceneId)}">编辑位置</button><button class="danger-button" data-asset-delete="${escapeAttr(asset.runtime.body)}" data-asset-scene="${escapeAttr(sceneId)}">删除</button></div>
+      <div class="asset-instance-actions"><button data-scene-compose="${escapeAttr(sceneId)}">进入情景预制</button></div>
     </div>`;
   }).join("") || emptyState("当前场景还没有添加的数字资产。请点击“添加新资产”或从资产库选择后保存。"));
 }
@@ -2654,8 +2686,63 @@ async function handleBodyClick(event) {
   const fullViewer = event.target.closest("#openSceneViewerFull");
   if (fullViewer) openViewerFullscreen(fullViewer.dataset.viewerUrl);
 
+  const goComposeFromScene = event.target.closest("#goComposeFromScene");
+  if (goComposeFromScene) {
+    if (!state.activeSceneId) return toast("请先选择基础场景");
+    resetCompositionForScene(state.activeSceneId);
+    switchTab("compose");
+  }
+
   const sceneAdd = event.target.closest("[data-scene-add]");
   if (sceneAdd) openAssetEditor(sceneAdd.dataset.sceneAdd);
+
+  const sceneCompose = event.target.closest("[data-scene-compose]");
+  if (sceneCompose) {
+    resetCompositionForScene(sceneCompose.dataset.sceneCompose);
+    switchTab("compose");
+    toast("已进入情景预制：请从左侧拖入机器人和数字资产");
+  }
+
+  const assetPreview = event.target.closest("[data-asset-preview]");
+  if (assetPreview) {
+    const url = `/static/asset-viewer.html?v=${STATIC_VERSION}&asset_id=${encodeURIComponent(assetPreview.dataset.assetPreview)}`;
+    window.open(url, "_blank", "noopener");
+  }
+
+  const assetDetails = event.target.closest("[data-asset-details]");
+  if (assetDetails) await openJsonDetails("独立资产清单", `/api/assets/${encodeURIComponent(assetDetails.dataset.assetDetails)}`);
+
+  const assetCompose = event.target.closest("[data-asset-compose]");
+  if (assetCompose) {
+    if (!state.composition.baseSceneId) resetCompositionForScene(state.activeSceneId || baseCompositionScenes()[0]?.id || "");
+    switchTab("compose");
+    addCompositionAsset(assetCompose.dataset.assetCompose);
+    toast("资产已加入情景预制，可在右侧设置位姿和物理属性");
+  }
+
+  const assetLibraryEdit = event.target.closest("[data-library-asset-edit]");
+  if (assetLibraryEdit) {
+    const asset = state.digitalAssets.find((item) => item.id === assetLibraryEdit.dataset.libraryAssetEdit);
+    if (!asset) return toast("资产已不存在，请刷新资产库");
+    const name = window.prompt("修改资产显示名称", asset.name || "");
+    if (name === null || !name.trim()) return;
+    await api(`/api/assets/${encodeURIComponent(asset.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    toast("资产名称已更新");
+    await refresh({ quiet: true });
+  }
+
+  const assetLibraryDelete = event.target.closest("[data-library-asset-delete]");
+  if (assetLibraryDelete) {
+    const asset = state.digitalAssets.find((item) => item.id === assetLibraryDelete.dataset.libraryAssetDelete);
+    if (!asset || !confirm("只删除资产索引，不删除源场景包、数据集或磁盘文件。确认继续？")) return;
+    await api(`/api/assets/${encodeURIComponent(asset.id)}`, { method: "DELETE" });
+    toast("资产索引已删除");
+    await refresh({ quiet: true });
+  }
 
   const assetEdit = event.target.closest("[data-asset-edit]");
   if (assetEdit) openAssetInstanceEditor(assetEdit.dataset.assetScene, assetEdit.dataset.assetEdit);

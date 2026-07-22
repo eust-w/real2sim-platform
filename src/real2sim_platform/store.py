@@ -157,6 +157,96 @@ class PlatformStore:
     def delete_model(self, item_id: str) -> None:
         self._delete("models", item_id)
 
+    def create_digital_asset(
+        self,
+        *,
+        name: str,
+        path: Path,
+        source_type: str,
+        source_uri: str = "",
+        dataset_id: str | None = None,
+        scene_id: str | None = None,
+        relative_path: str = "",
+        asset_format: str = "",
+        preview_path: Path | None = None,
+        metadata: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
+        item_id: str | None = None,
+    ) -> dict[str, Any]:
+        item_id = item_id or uuid.uuid4().hex
+        now = _now()
+        with self._connect() as db:
+            db.execute(
+                "insert into digital_assets(id,name,path,source_type,source_uri,dataset_id,scene_id,relative_path,format,preview_path,metadata_json,tags_json,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item_id, name, str(path), source_type, source_uri, dataset_id, scene_id, relative_path, asset_format, str(preview_path or ""), _json(metadata or {}), _json(tags or []), now, now),
+            )
+        return self.get_digital_asset(item_id)
+
+    def upsert_digital_asset(self, *, item_id: str, **kwargs: Any) -> dict[str, Any]:
+        with self._connect() as db:
+            existing = db.execute("select id from digital_assets where id=?", (item_id,)).fetchone()
+        if existing:
+            fields = {
+                "name": kwargs.get("name"),
+                "path": str(kwargs.get("path") or ""),
+                "source_type": kwargs.get("source_type"),
+                "source_uri": kwargs.get("source_uri", ""),
+                "dataset_id": kwargs.get("dataset_id"),
+                "scene_id": kwargs.get("scene_id"),
+                "relative_path": kwargs.get("relative_path", ""),
+                "format": kwargs.get("asset_format", ""),
+                "preview_path": str(kwargs.get("preview_path") or ""),
+                "metadata_json": _json(kwargs.get("metadata") or {}),
+                "tags_json": _json(kwargs.get("tags") or []),
+                "deleted_at": None,
+                "updated_at": _now(),
+            }
+            with self._connect() as db:
+                db.execute(
+                    "update digital_assets set name=?,path=?,source_type=?,source_uri=?,dataset_id=?,scene_id=?,relative_path=?,format=?,preview_path=?,metadata_json=?,tags_json=?,deleted_at=?,updated_at=? where id=?",
+                    (*fields.values(), item_id),
+                )
+            return self.get_digital_asset(item_id)
+        return self.create_digital_asset(item_id=item_id, **kwargs)
+
+    def list_digital_assets(self, *, include_deleted: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_deleted else " where deleted_at is null"
+        with self._connect() as db:
+            rows = db.execute(f"select * from digital_assets{where} order by created_at desc").fetchall()
+        return [self._digital_asset_row(row) for row in rows]
+
+    def get_digital_asset(self, item_id: str) -> dict[str, Any]:
+        with self._connect() as db:
+            row = db.execute("select * from digital_assets where id=? and deleted_at is null", (item_id,)).fetchone()
+        if row is None:
+            raise KeyError(item_id)
+        return self._digital_asset_row(row)
+
+    def update_digital_asset(self, item_id: str, *, name: str | None = None, tags: list[str] | None = None, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.get_digital_asset(item_id)
+        fields: list[str] = []
+        values: list[Any] = []
+        if name is not None:
+            fields.append("name=?")
+            values.append(name)
+        if tags is not None:
+            fields.append("tags_json=?")
+            values.append(_json(tags))
+        if metadata is not None:
+            fields.append("metadata_json=?")
+            values.append(_json(metadata))
+        if fields:
+            fields.append("updated_at=?")
+            values.extend([_now(), item_id])
+            with self._connect() as db:
+                db.execute(f"update digital_assets set {','.join(fields)} where id=?", values)
+        return self.get_digital_asset(item_id)
+
+    def delete_digital_asset(self, item_id: str) -> None:
+        self.get_digital_asset(item_id)
+        with self._connect() as db:
+            db.execute("update digital_assets set deleted_at=?,updated_at=? where id=?", (_now(), _now(), item_id))
+
     def update_entity_storage(self, table: str, item_id: str, *, storage_uri: str, checksum: str = "", cache_state: str = "local") -> dict[str, Any]:
         if table not in {"datasets", "scenes", "models"}:
             raise ValueError("unsupported entity table")
@@ -468,6 +558,13 @@ class PlatformStore:
             db.execute("create table if not exists scenes(id text primary key,name text,path text,metadata_json text,created_at real,updated_at real)")
             db.execute("create table if not exists models(id text primary key,name text,path text,metadata_json text,created_at real,updated_at real)")
             db.execute(
+                "create table if not exists digital_assets("
+                "id text primary key,name text not null,path text not null,source_type text not null,source_uri text not null default '',"
+                "dataset_id text,scene_id text,relative_path text not null default '',format text not null default '',preview_path text not null default '',"
+                "metadata_json text not null default '{}',tags_json text not null default '[]',created_at real,updated_at real)"
+            )
+            self._ensure_column(db, "digital_assets", "deleted_at", "real")
+            db.execute(
                 "create table if not exists tasks("
                 "id text primary key,type text,status text,params_json text,result_json text not null default '{}',"
                 "run_dir text,error text,cancel_requested integer not null default 0,created_at real,updated_at real)"
@@ -562,6 +659,25 @@ class PlatformStore:
 
     def _model_row(self, row: sqlite3.Row) -> dict[str, Any]:
         return {**self._entity_common(row), "metadata": json.loads(row["metadata_json"])}
+
+    def _digital_asset_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "path": row["path"],
+            "source_type": row["source_type"],
+            "source_uri": row["source_uri"],
+            "dataset_id": row["dataset_id"],
+            "scene_id": row["scene_id"],
+            "relative_path": row["relative_path"],
+            "format": row["format"],
+            "preview_path": row["preview_path"],
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "tags": json.loads(row["tags_json"] or "[]"),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "deleted_at": row["deleted_at"] if "deleted_at" in row.keys() else None,
+        }
 
     def _entity_common(self, row: sqlite3.Row) -> dict[str, Any]:
         return {

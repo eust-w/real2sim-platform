@@ -17,7 +17,7 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
 from .config import PlatformConfig, is_path_allowed
-from .motrix_scene import COMPOSITION_ASSET_RECIPES, build_scene_composition, build_spatial_scene_package, compose_scene_asset, revise_scene_asset, validate_runtime_scene
+from .motrix_scene import COMPOSITION_ASSET_RECIPES, SUPPORTED_MESH_SUFFIXES, build_scene_composition, build_spatial_scene_package, compose_scene_asset, revise_scene_asset, validate_runtime_scene
 from .source_revision import read_source_revision
 from .storage import ALLOWED_AREAS, BosStorage, normalize_relative_path
 from .store import PlatformStore
@@ -770,10 +770,17 @@ def run_motrixsim_scene_import(config: PlatformConfig, store: PlatformStore, tas
         validation_steps=validation_steps,
         emit=emit,
     )
-    _task_progress(store, task, 84, "登记场景", "MotrixSim 已真实加载并步进，正在登记场景资产与清单")
+    _task_progress(store, task, 84, "登记基础场景与独立资产", "MotrixSim 已真实加载并步进；机器人和任务物体不会在导入阶段自动加入")
     artifacts = _index_artifacts(store, task["id"], package_dir)
     manifest_path = Path(result["manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["scene_role"] = "base_scene"
+    manifest["composition"] = {
+        "status": "empty",
+        "robot": None,
+        "assets": [],
+        "next_step": "进入情景预制添加机器人、数字资产并配置物理属性",
+    }
     _attach_artifact_urls(manifest, artifacts)
     manifest_path.write_text(json.dumps(enrich_scene_manifest_assets(manifest), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     report = result["report"]
@@ -788,6 +795,9 @@ def run_motrixsim_scene_import(config: PlatformConfig, store: PlatformStore, tas
             "runtime_validation": {"mujoco": bool(validation["mujoco"]["ok"]), "motrixsim": bool(validation["motrixsim"]["ok"])},
             "source_dataset_id": dataset["id"],
             "editable": True,
+            "scene_role": "base_scene",
+            "composition_asset_count": 0,
+            "robot_id": None,
         },
         source_type="motrixsim_spatial_bundle",
         source_uri=dataset.get("storage_uri") or dataset.get("source_uri") or str(input_root),
@@ -798,7 +808,27 @@ def run_motrixsim_scene_import(config: PlatformConfig, store: PlatformStore, tas
         tags=["motrixsim", "spatial-bundle", "usdz", "3dgs", "runtime-validated", "editable"],
         cache_state="local",
     )
-    _task_progress(store, task, 94, "场景可用", "空间包已成为可预览、可添加数字资产的 MotrixSim 场景")
+    standalone_assets = _register_imported_scene_assets(store, scene_id=scene["id"], package_dir=package_dir, manifest=manifest, manifest_path=manifest_path)
+    manifest["asset_registry"] = {
+        "mode": "standalone",
+        "note": "导入阶段只登记基础场景和独立资产；机器人、任务物体和物理属性必须在情景预制中添加",
+        "asset_ids": [item["id"] for item in standalone_assets],
+    }
+    for asset in manifest.get("assets", []):
+        if not isinstance(asset, dict):
+            continue
+        registered = next(
+            (
+                item
+                for item in standalone_assets
+                if Path(str(item.get("path") or "")).resolve() == Path(str(asset.get("path") or "")).resolve()
+            ),
+            None,
+        )
+        if registered:
+            asset["standalone_asset_id"] = registered["id"]
+    manifest_path.write_text(json.dumps(enrich_scene_manifest_assets(manifest), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _task_progress(store, task, 94, "场景可用", "基础场景与独立资产已登记；请进入情景预制添加机器人、物体和物理属性")
     return {
         "scene_id": scene["id"],
         "scene_path": scene["path"],
@@ -806,7 +836,53 @@ def run_motrixsim_scene_import(config: PlatformConfig, store: PlatformStore, tas
         "package_dir": str(package_dir),
         "runtime_validation": validation,
         "source_dataset_id": dataset["id"],
+        "standalone_asset_ids": [item["id"] for item in standalone_assets],
     }
+
+
+def _register_imported_scene_assets(
+    store: PlatformStore,
+    *,
+    scene_id: str,
+    package_dir: Path,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+) -> list[dict[str, Any]]:
+    """Register imported files as independent catalog items without composing them into the scene."""
+    registered: list[dict[str, Any]] = []
+    ignored_roles = {"motrixsim_runtime", "runtime_report", "source_controller", "controller"}
+    for entry in manifest.get("assets", []):
+        if not isinstance(entry, dict) or not entry.get("path") or entry.get("role") in ignored_roles:
+            continue
+        source_path = Path(str(entry["path"])).resolve()
+        package_root = package_dir.resolve()
+        if source_path == package_root or package_root not in source_path.parents or not source_path.is_file():
+            continue
+        relative_path = source_path.relative_to(package_root).as_posix()
+        asset_id = hashlib.sha256(f"scene:{scene_id}:{relative_path}".encode("utf-8")).hexdigest()[:24]
+        suffix = source_path.suffix.lower()
+        composition_supported = bool(entry.get("composition_supported")) or entry.get("role") == "catalog_asset"
+        item = store.upsert_digital_asset(
+            item_id=asset_id,
+            name=str(entry.get("name") or source_path.stem),
+            path=source_path,
+            source_type="scene_asset",
+            source_uri=str(manifest_path),
+            scene_id=scene_id,
+            relative_path=relative_path,
+            asset_format=suffix.lstrip("."),
+            preview_path=source_path,
+            metadata={
+                "role": entry.get("role"),
+                "kind": entry.get("kind"),
+                "autoload": entry.get("autoload", False),
+                "composition_supported": composition_supported,
+                "source_manifest": str(manifest_path),
+            },
+            tags=["imported", "standalone", str(entry.get("role") or "asset")],
+        )
+        registered.append(item)
+    return registered
 
 
 def run_scene_asset_compose(config: PlatformConfig, store: PlatformStore, task: dict[str, Any], emit: Callable[[str], None]) -> dict[str, Any]:
