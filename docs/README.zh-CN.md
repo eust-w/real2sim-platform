@@ -8,6 +8,8 @@
 
 [下载 Alpha 发布包](https://github.com/eust-w/real2sim-platform/releases/tag/v0.1.0-alpha.1) | [90 秒介绍视频](https://github.com/eust-w/real2sim-platform/releases/download/v0.1.0-alpha.1/real2sim-intro-zh.mp4) | [45 秒竖版](https://github.com/eust-w/real2sim-platform/releases/download/v0.1.0-alpha.1/real2sim-short-zh.mp4) | [Gitea 镜像](https://gitea.d-robotics.cc/longtao.wu/real2sim-platform)
 
+[抖音观看](https://www.douyin.com/video/7701399089530916159) | [X 观看](https://x.com/eustancewu/status/2115131684236800501) | [各平台实际状态](releases/publication-status.md)
+
 预览 GLB、配置材料预设，并导出包含网格、参数和 Python 脚本的 Genesis 场景包。内置自制样例不需要 API Key；可选接入自己的 DashScope 账号，通过 Tripo 生成 3D 资产。
 
 ## 无需密钥体验
@@ -54,7 +56,7 @@ python .data/genesis-packages/example-soft-puck/genesis_scene.py --steps 800 --r
 
 工作台代码和自制样例采用 MIT 许可。外部模型、服务及生成资产另受提供方条款约束，开源工作台不代表底层生成模型开源或生成免费。详见[第三方声明](../THIRD_PARTY_NOTICES.md)。
 
-连接生成服务时，复制 `.env.example` 为 `.env.local` 并设置自己的 Key，然后运行 `npm run dev`。API 只监听 `127.0.0.1:8789`，本项目不是可直接公开部署的多用户服务。不要把密钥或 `.data/` 提交到 Git。
+连接生成服务时，复制 `.env.example` 为 `.env.local` 并设置自己的 Key，然后运行 `npm run dev`。API 默认只监听 `127.0.0.1:8789`；普通模式可以通过 shell 或 `.env.local` 的 `PORT` 修改端口，前端代理同步使用该值，shell 优先。演示模式不读取 dotenv 文件。本项目不是可直接公开部署的多用户服务。不要把密钥或 `.data/` 提交到 Git。
 
 ## 开发与反馈
 

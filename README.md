@@ -2,11 +2,15 @@
 
 **A local-first workbench for 3D assets and Genesis simulation exports.**
 
+[![CI](https://github.com/eust-w/real2sim-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/eust-w/real2sim-platform/actions/workflows/ci.yml)
+
 [中文](docs/README.zh-CN.md) · [Offline example](examples/README.md) · [Roadmap](docs/ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE)
 
 ![Real2Sim Studio workbench](docs/images/workbench.png)
 
 [Download v0.1.0 Alpha](https://github.com/eust-w/real2sim-platform/releases/tag/v0.1.0-alpha.1) · [90-second introduction](https://github.com/eust-w/real2sim-platform/releases/download/v0.1.0-alpha.1/real2sim-intro-en.mp4) · [中文视频](https://github.com/eust-w/real2sim-platform/releases/download/v0.1.0-alpha.1/real2sim-intro-zh.mp4) · [Gitea mirror](https://gitea.d-robotics.cc/longtao.wu/real2sim-platform)
+
+[Watch on X](https://x.com/eustancewu/status/2115131684236800501) · [Watch on Douyin](https://www.douyin.com/video/7701399089530916159) · [Publication status](docs/releases/publication-status.md)
 
 Inspect a GLB, configure a material preset and export a self-contained Genesis scene. Start with the included procedural example without an API key, or connect your own DashScope account for Tripo text/image-to-3D generation.
 
@@ -60,7 +64,7 @@ npm run dev
 
 Generation uses an external paid service. Provider models, generated assets and service terms are not covered by this repository's MIT license. A flexible variant is a new prompt-based generation; it is not deformation or reconstruction of the original GLB.
 
-The local API defaults to `127.0.0.1:8789`. Set `PORT` before starting to change it; the development proxy uses the same value. This is a single-user local application, not a publicly hosted service. See [Security](SECURITY.md).
+The local API defaults to `127.0.0.1:8789`. Set `PORT` in the shell or `.env.local` before starting to change it; the development proxy uses the same value. Shell values take precedence. Demo mode ignores dotenv files. This is a single-user local application, not a publicly hosted service. See [Security](SECURITY.md).
 
 ## Limits
 
