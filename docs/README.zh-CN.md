@@ -6,6 +6,8 @@
 
 ![工作台](images/workbench.png)
 
+[下载 Alpha 发布包](https://github.com/eust-w/real2sim-platform/releases/tag/v0.1.0-alpha.1) | [90 秒介绍视频](https://github.com/eust-w/real2sim-platform/releases/download/v0.1.0-alpha.1/real2sim-intro-zh.mp4) | [45 秒竖版](https://github.com/eust-w/real2sim-platform/releases/download/v0.1.0-alpha.1/real2sim-short-zh.mp4) | [Gitea 镜像](https://gitea.d-robotics.cc/longtao.wu/real2sim-platform)
+
 预览 GLB、配置材料预设，并导出包含网格、参数和 Python 脚本的 Genesis 场景包。内置自制样例不需要 API Key；可选接入自己的 DashScope 账号，通过 Tripo 生成 3D 资产。
 
 ## 无需密钥体验
