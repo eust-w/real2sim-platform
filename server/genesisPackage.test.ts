@@ -33,7 +33,7 @@ function createFlexTask(material: 'silicone' | 'cloth' = 'silicone'): StoredTask
         damping: 42,
         thickness: 3.2,
         deformation: 64,
-        gravity: 9.8,
+        gravity: 3.7,
       },
     },
     output: {
@@ -93,7 +93,9 @@ describe('Genesis package export', () => {
     const script = await readFile(path.join(exported.packageDir, 'genesis_scene.py'), 'utf8')
     expect(script).toContain('gs.materials.FEM.Elastic')
     expect(script).toContain('force_retet=True')
-    expect(script).toContain('E=70400')
+    expect(exported.manifest.genesis.parameters.E).toBe(70400)
+    expect(exported.manifest.genesis.gravity).toBe(3.7)
+    expect(script).toContain('gravity = -float(config["gravity"])')
 
     const profile = JSON.parse(await readFile(path.join(exported.packageDir, 'flex-profile.json'), 'utf8'))
     expect(profile.schema).toBe('real2sim.flexProfile.v1')
@@ -111,6 +113,6 @@ describe('Genesis package export', () => {
 
     const script = await readFile(path.join(exported.packageDir, 'genesis_scene.py'), 'utf8')
     expect(script).toContain('gs.materials.PBD.Cloth')
-    expect(script).toContain('stretch_stiffness=0.754')
+    expect(exported.manifest.genesis.parameters.stretchCompliance).toBeCloseTo(1e-6 / 73, 12)
   })
 })

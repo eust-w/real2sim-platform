@@ -1,7 +1,8 @@
-import { Bounds, Center, ContactShadows, Float, MeshDistortMaterial, OrbitControls, useGLTF } from '@react-three/drei'
-import { Canvas, useFrame } from '@react-three/fiber'
-import { Component, Suspense, useMemo, useRef, type ErrorInfo, type ReactNode } from 'react'
-import type { Mesh, Object3D } from 'three'
+import { Bounds, Center, ContactShadows, OrbitControls, useGLTF } from '@react-three/drei'
+import { Canvas } from '@react-three/fiber'
+import { Component, Suspense, useMemo, useState, type ErrorInfo, type ReactNode } from 'react'
+import { Box3, Vector3, type Mesh, type Object3D } from 'three'
+import { RotateCw } from 'lucide-react'
 import type { SimulationProfile, StoredTask } from '../lib/api'
 import { getModelUrl, getPreviewImageUrl } from '../lib/api'
 import type { Messages } from '../lib/i18n'
@@ -36,41 +37,12 @@ class CanvasErrorBoundary extends Component<{ children: ReactNode }, { failed: b
   }
 }
 
-function SoftBody({ simulation }: { simulation: SimulationProfile }) {
-  const meshRef = useRef<Mesh>(null)
-  const distort = 0.14 + simulation.deformation / 220
-  const speed = 0.75 + simulation.elasticity / 80
-
-  useFrame(({ clock }) => {
-    const mesh = meshRef.current
-    if (!mesh) return
-    mesh.rotation.y = clock.elapsedTime * 0.28
-    mesh.rotation.x = Math.sin(clock.elapsedTime * 0.45) * 0.08
-    const squeeze = 1 + Math.sin(clock.elapsedTime * speed) * (simulation.elasticity / 900)
-    mesh.scale.set(1.25 / squeeze, 0.92 * squeeze, 1.05)
-  })
-
-  const colorByMaterial = {
-    silicone: '#5eead4',
-    cloth: '#f97373',
-    inflatable: '#a3e635',
-    softRobot: '#7dd3fc',
-  }[simulation.material]
-
+function Placeholder() {
   return (
-    <Float speed={1.15} rotationIntensity={0.35} floatIntensity={0.32}>
-      <mesh ref={meshRef} castShadow receiveShadow position={[0, 0.25, 0]}>
-        <icosahedronGeometry args={[1.45, 18]} />
-        <MeshDistortMaterial
-          color={colorByMaterial}
-          distort={distort}
-          speed={speed}
-          roughness={0.46}
-          metalness={0.03}
-          clearcoat={0.36}
-        />
-      </mesh>
-    </Float>
+    <mesh>
+      <boxGeometry args={[1.5, 1.5, 1.5]} />
+      <meshStandardMaterial color="#9aaba7" wireframe />
+    </mesh>
   )
 }
 
@@ -100,6 +72,8 @@ function AssetModel({ url }: { url: string }) {
   const { scene } = useGLTF(url)
   const previewScene = useMemo(() => {
     const clonedScene = scene.clone(true)
+    const size = new Box3().setFromObject(clonedScene).getSize(new Vector3())
+    clonedScene.scale.multiplyScalar(2.2 / Math.max(size.x, size.y, size.z, 0.0001))
     enableShadows(clonedScene)
     return clonedScene
   }, [scene])
@@ -113,7 +87,8 @@ function AssetModel({ url }: { url: string }) {
   )
 }
 
-export function Viewport3D({ task, simulation, labels }: Viewport3DProps) {
+export function Viewport3D({ task, labels }: Viewport3DProps) {
+  const [rotating, setRotating] = useState(false)
   const modelUrl = getModelUrl(task)
   const previewImageUrl = getPreviewImageUrl(task)
   const status = modelUrl ? labels.modelReady : previewImageUrl ? labels.imageReady : task ? labels.preview : labels.idle
@@ -125,6 +100,7 @@ export function Viewport3D({ task, simulation, labels }: Viewport3DProps) {
           <span className="panel-label">{labels.label}</span>
           <strong>{status}</strong>
         </div>
+        {modelUrl ? <button type="button" className="icon-button" aria-label="Rotate model" title="Rotate model" aria-pressed={rotating} onClick={() => setRotating(!rotating)}><RotateCw size={18} /></button> : null}
         {modelUrl ? (
           <a href={modelUrl} target="_blank" rel="noreferrer" className="mini-link">
             GLB
@@ -133,18 +109,18 @@ export function Viewport3D({ task, simulation, labels }: Viewport3DProps) {
       </div>
       <div className="canvas-wrap">
         {modelUrl || !previewImageUrl ? (
-          <CanvasErrorBoundary>
+          <CanvasErrorBoundary key={modelUrl}>
             <Canvas camera={{ position: [3.7, 2.5, 4.2], fov: 42 }} gl={{ preserveDrawingBuffer: true, antialias: true }} shadows>
               <ambientLight intensity={1} />
               <hemisphereLight args={['#ffffff', '#9ca3af', 1.25]} />
               <directionalLight position={[4, 5, 3]} intensity={2.4} castShadow />
               <pointLight position={[-3, 2.2, -2]} intensity={0.65} color="#5eead4" />
-              <Suspense fallback={<SoftBody simulation={simulation} />}>
-                {modelUrl ? <AssetModel url={modelUrl} /> : <SoftBody simulation={simulation} />}
+              <Suspense fallback={<Placeholder />}>
+                {modelUrl ? <AssetModel url={modelUrl} /> : <Placeholder />}
               </Suspense>
               <StageGrid />
               <ContactShadows position={[0, -1.08, 0]} opacity={0.28} scale={5} blur={2.4} far={3} />
-              <OrbitControls enablePan={false} minDistance={3.4} maxDistance={8} />
+              <OrbitControls enablePan={false} minDistance={3.4} maxDistance={8} autoRotate={rotating} autoRotateSpeed={1.5} />
             </Canvas>
           </CanvasErrorBoundary>
         ) : (

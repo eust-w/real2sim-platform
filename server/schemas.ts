@@ -1,5 +1,17 @@
 import { z } from 'zod'
 
+function isAssetUrl(value: string) {
+  if (value.startsWith('/assets/')) {
+    return /^\/assets\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*$/.test(value)
+  }
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
 export const tripoModelSchema = z.enum(['Tripo/Tripo-H3.1', 'Tripo/Tripo-P1.0'])
 
 export const generationModeSchema = z.enum(['text', 'image', 'multiImage'])
@@ -23,7 +35,7 @@ export const createTripoTaskSchema = z
     prompt: z.string().trim().max(1024).optional(),
     image: z.string().trim().url().optional().or(z.literal('')),
     images: z.array(multiImageSlotSchema).length(4).optional(),
-    parameters: tripoParametersSchema.default({}),
+    parameters: tripoParametersSchema.default({ texture_quality: 'standard', geometry_quality: 'standard', pbr: true, texture: true }),
   })
   .superRefine((data, ctx) => {
     if (data.mode === 'text' && !data.prompt) {
@@ -67,7 +79,7 @@ export const createFlexTaskSchema = z.object({
   sourceTaskId: z.string().trim().optional(),
   sourceName: z.string().trim().max(160).optional(),
   sourcePrompt: z.string().trim().max(1024).optional(),
-  sourceModelUrl: z.string().trim().url().optional().or(z.literal('')),
+  sourceModelUrl: z.string().trim().refine(isAssetUrl, 'Expected a local asset path or HTTP(S) URL.').optional().or(z.literal('')),
   behaviorPrompt: z.string().trim().max(1024).optional(),
   model: tripoModelSchema.default('Tripo/Tripo-H3.1'),
   parameters: tripoParametersSchema.default({
@@ -82,3 +94,8 @@ export const createFlexTaskSchema = z.object({
 export type CreateTripoTaskInput = z.infer<typeof createTripoTaskSchema>
 export type CreateFlexTaskInput = z.infer<typeof createFlexTaskSchema>
 export type SimulationProfile = z.infer<typeof simulationProfileSchema>
+
+export const exportGenesisSchema = z.object({
+  sourceTaskId: z.string().regex(/^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,159}$/),
+  simulation: simulationProfileSchema,
+})

@@ -6,8 +6,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://localhost:8787',
-      '/assets': 'http://localhost:8787',
+      '/api': `http://127.0.0.1:${process.env.PORT || 8789}`,
+      '/assets': `http://127.0.0.1:${process.env.PORT || 8789}`,
     },
   },
 })

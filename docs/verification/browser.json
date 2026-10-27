@@ -1,0 +1,19 @@
+{
+  "checks": [
+    "offline import",
+    "cross-origin rejection",
+    "real GLB archive",
+    "current gravity",
+    "solver mapping",
+    "desktop canvas pixels",
+    "interactive rotation",
+    "browser export current sliders",
+    "mobile no overflow"
+  ],
+  "browserErrors": [],
+  "canvas": {
+    "colors": 282,
+    "width": 840,
+    "height": 578
+  }
+}

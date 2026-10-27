@@ -44,10 +44,9 @@ export function createSimulationExport(input: CreateFlexTaskInput) {
       gravity: input.simulation.gravity,
     },
     solver: {
-      type: 'position-based-dynamics',
-      substeps: 8,
-      selfCollision: true,
-      preserveVolume: input.simulation.material !== 'cloth',
+      type: input.simulation.material === 'cloth' ? 'pbd_cloth' : 'fem_elastic',
+      substeps: 4,
+      parametersArePresets: true,
     },
     generatedAt: new Date().toISOString(),
   }

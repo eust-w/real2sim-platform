@@ -1,0 +1,15 @@
+{
+  "genesis_version": "1.4.5",
+  "backend": "cpu",
+  "solver": "fem_elastic",
+  "steps": 800,
+  "dt": 0.002,
+  "gravity": 9.8,
+  "vertex_count": 226,
+  "initial_center_z": 0.3496624529361725,
+  "final_center_z": 0.04337442293763161,
+  "min_vertex_z": 0.0009183835936710238,
+  "all_finite": true,
+  "recorded": true,
+  "max_shape_deformation_m": 0.041962653398513794
+}

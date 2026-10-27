@@ -38,7 +38,7 @@ const assetSpecs = [
 
 export const assetRoot = process.env.REAL2SIM_ASSET_ROOT
   ? path.resolve(process.env.REAL2SIM_ASSET_ROOT)
-  : path.join(process.cwd(), '.data', 'assets')
+  : path.resolve(process.env.REAL2SIM_DATA_ROOT || '.data', 'assets')
 
 function safePathSegment(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, '_')

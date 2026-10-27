@@ -1,23 +1,29 @@
 {
   "name": "real2sim-platform",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "A local-first 3D asset and Genesis simulation workbench",
+  "license": "MIT",
+  "repository": "github:eust-w/real2sim-platform",
+  "engines": { "node": ">=22.12" },
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"npm:server\" \"npm:client\"",
+    "dev": "node scripts/dev.mjs",
+    "demo": "node scripts/dev.mjs --demo",
     "client": "vite",
     "server": "tsx watch server/index.ts",
     "start": "tsx server/index.ts",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "test:e2e": "node scripts/smoke.mjs",
+    "example:export": "tsx scripts/export-example.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
-    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "lucide-react": "^1.17.0",
@@ -28,7 +34,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",

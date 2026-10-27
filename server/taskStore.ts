@@ -3,12 +3,12 @@ import path from 'node:path'
 import type { CreateFlexTaskInput, CreateTripoTaskInput } from './schemas.js'
 import type { DashScopeTaskOutput, TaskStatus } from './tripoClient.js'
 
-const dataDir = path.join(process.cwd(), '.data')
+const dataDir = path.resolve(process.env.REAL2SIM_DATA_ROOT || path.join(process.cwd(), '.data'))
 const storePath = path.join(dataDir, 'tasks.json')
 
 export type StoredTask = {
   taskId: string
-  kind: 'generation' | 'flex'
+  kind: 'generation' | 'flex' | 'sample'
   title: string
   status: TaskStatus
   requestId?: string

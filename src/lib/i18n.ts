@@ -3,8 +3,10 @@ export type Locale = 'zh' | 'en'
 const dictionaries = {
   zh: {
     app: {
-      name: 'real2sim 平台',
-      subtitle: 'Tripo H3.1 资产生成与柔性仿真工作台',
+      name: 'Real2Sim Studio',
+      subtitle: '资产 · 材料 · Genesis',
+      loadExample: '加载样例',
+      demoMode: '离线样例',
       apiReady: 'API 已配置',
       apiMissing: 'API 未配置',
       language: '语言',
@@ -42,7 +44,7 @@ const dictionaries = {
       noTexture: '无贴图',
     },
     flex: {
-      title: '柔性物体生成',
+      title: '材料与仿真导出',
       source: '源资产',
       sourceModelUrl: '源 GLB',
       sourcePrompt: '源描述',
@@ -53,10 +55,10 @@ const dictionaries = {
       cloth: '织物',
       inflatable: '充气膜',
       softRobot: '软体机器人',
-      elasticity: '弹性',
+      elasticity: '刚度预设',
       damping: '阻尼',
       thickness: '厚度 mm',
-      deformation: '最大形变',
+      deformation: '柔软度预设',
       gravity: '重力',
       generate: '生成柔性版本',
       export: '导出仿真配置',
@@ -91,9 +93,9 @@ const dictionaries = {
     },
     viewport: {
       label: '3D 预览',
-      modelReady: '模型链接已生成',
+      modelReady: '几何预览',
       imageReady: '渲染图已生成',
-      preview: '软体预览',
+      preview: '等待资产',
       idle: '等待生成',
     },
     timeline: {
@@ -107,8 +109,10 @@ const dictionaries = {
   },
   en: {
     app: {
-      name: 'real2sim Platform',
-      subtitle: 'Tripo H3.1 asset generation and soft simulation workbench',
+      name: 'Real2Sim Studio',
+      subtitle: 'Assets · Materials · Genesis',
+      loadExample: 'Load example',
+      demoMode: 'Offline example',
       apiReady: 'API configured',
       apiMissing: 'API missing',
       language: 'Language',
@@ -146,7 +150,7 @@ const dictionaries = {
       noTexture: 'Untextured',
     },
     flex: {
-      title: 'Flexible Object Generation',
+      title: 'Material & Simulation Export',
       source: 'Source Asset',
       sourceModelUrl: 'Source GLB',
       sourcePrompt: 'Source Description',
@@ -157,10 +161,10 @@ const dictionaries = {
       cloth: 'Cloth',
       inflatable: 'Inflatable',
       softRobot: 'Soft Robot',
-      elasticity: 'Elasticity',
+      elasticity: 'Stiffness preset',
       damping: 'Damping',
       thickness: 'Thickness mm',
-      deformation: 'Max Deformation',
+      deformation: 'Softness preset',
       gravity: 'Gravity',
       generate: 'Generate Soft Variant',
       export: 'Export Simulation Profile',
@@ -195,9 +199,9 @@ const dictionaries = {
     },
     viewport: {
       label: '3D Preview',
-      modelReady: 'Model link generated',
+      modelReady: 'Geometry preview',
       imageReady: 'Rendered image generated',
-      preview: 'Soft preview',
+      preview: 'Waiting for asset',
       idle: 'Waiting',
     },
     timeline: {

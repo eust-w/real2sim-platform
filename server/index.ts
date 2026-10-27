@@ -1,24 +1,37 @@
-import cors from 'cors'
-import dotenv from 'dotenv'
+import './config.js'
 import express from 'express'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { ZodError } from 'zod'
 import { assetRoot, cacheTaskAssets, cacheTasksAssets } from './assetStore.js'
 import { buildFlexiblePrompt, createSimulationExport } from './flex.js'
-import { createGenesisPackage } from './genesisPackage.js'
-import { createFlexTaskSchema, createTripoTaskSchema } from './schemas.js'
+import { createGenesisPackage, genesisPackageRoot } from './genesisPackage.js'
+import { createFlexTaskSchema, createTripoTaskSchema, exportGenesisSchema } from './schemas.js'
+import { importExample } from './examples.js'
 import { getTask, mergeTaskOutput, readTasks, upsertTask, writeTasks, type StoredTask } from './taskStore.js'
 import { createTripoTask, queryTripoTask } from './tripoClient.js'
 
-dotenv.config({ path: '.env.local' })
-dotenv.config()
-
 const app = express()
-const port = Number(process.env.PORT || 8787)
+const port = Number(process.env.PORT || 8789)
+const demo = process.env.REAL2SIM_DEMO === '1'
 
-app.use(cors())
+app.disable('x-powered-by')
+app.use((req, res, next) => {
+  const localNames = new Set(['localhost', '127.0.0.1', '[::1]'])
+  const origin = req.get('origin')
+  try {
+    if (!localNames.has(req.hostname) || (origin && !localNames.has(new URL(origin).hostname))) {
+      res.status(403).json({ error: 'This workbench accepts local requests only.' })
+      return
+    }
+  } catch {
+    res.status(403).json({ error: 'Invalid request origin.' })
+    return
+  }
+  next()
+})
 app.use(express.json({ limit: '1mb' }))
 app.use('/assets', express.static(assetRoot))
 
@@ -41,9 +54,56 @@ app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'real2sim-platform',
-    apiConfigured: Boolean(process.env.DASHSCOPE_API_KEY),
+    apiConfigured: !demo && Boolean(process.env.DASHSCOPE_API_KEY),
+    demo,
     defaultModel: 'Tripo/Tripo-H3.1',
   })
+})
+
+app.post('/api/examples/soft-puck', async (_req, res, next) => {
+  try {
+    res.status(201).json({ task: await importExample() })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/genesis/packages', async (req, res, next) => {
+  try {
+    const input = exportGenesisSchema.parse(req.body)
+    const source = await getTask(input.sourceTaskId)
+    if (!source) {
+      res.status(404).json({ error: 'Source asset not found.' })
+      return
+    }
+    const task: StoredTask = {
+      ...source,
+      taskId: `export-${randomUUID()}`,
+      kind: 'flex',
+      request: {
+        sourceTaskId: source.taskId,
+        sourceName: source.title,
+        model: 'Tripo/Tripo-H3.1',
+        parameters: { texture_quality: 'standard', geometry_quality: 'standard', pbr: true, texture: true },
+        simulation: input.simulation,
+      },
+    }
+    const exported = await createGenesisPackage(task)
+    res.status(201).json({ manifest: exported.manifest, archiveUrl: `/api/genesis/exports/${task.taskId}/download` })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/genesis/exports/:exportId/download', async (req, res, next) => {
+  if (!/^export-[0-9a-f-]{36}$/.test(req.params.exportId)) {
+    res.status(400).json({ error: 'Invalid export ID.' })
+    return
+  }
+  try {
+    const archive = path.join(genesisPackageRoot, `${req.params.exportId}.tar.gz`)
+    await stat(archive)
+    res.download(archive, `${req.params.exportId}.tar.gz`, { dotfiles: 'allow' })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') res.status(404).json({ error: 'Export not found.' })
+    else next(error)
+  }
 })
 
 app.get('/api/tripo/tasks', async (_req, res, next) => {
@@ -88,6 +148,11 @@ app.post('/api/tripo/tasks', async (req, res, next) => {
 
 app.get('/api/tripo/tasks/:taskId', async (req, res, next) => {
   try {
+    const stored = await getTask(req.params.taskId)
+    if (stored?.kind === 'sample') {
+      res.json({ task: stored })
+      return
+    }
     const response = await queryTripoTask(req.params.taskId)
     if (!response.output) {
       throw new Error('DashScope did not return task output.')
@@ -218,7 +283,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(500).json({ error: message })
 })
 
-app.listen(port, () => {
+app.listen(port, '127.0.0.1', () => {
   console.log(`real2sim assets served from ${path.relative(process.cwd(), assetRoot) || assetRoot}`)
   console.log(`real2sim API listening on http://localhost:${port}`)
 })

@@ -44,6 +44,7 @@ export type TripoPayload = {
 const apiBase = process.env.DASHSCOPE_API_BASE || 'https://dashscope.aliyuncs.com/api/v1'
 
 function apiKey() {
+  if (process.env.REAL2SIM_DEMO === '1') throw new Error('Generation is disabled in offline demo mode.')
   const key = process.env.DASHSCOPE_API_KEY
   if (!key) {
     throw new Error('DASHSCOPE_API_KEY is not configured.')
@@ -79,7 +80,7 @@ export function toTripoPayload(input: CreateTripoTaskInput): TripoPayload {
   }
 
   if (input.mode === 'multiImage') {
-    payload.input.images = input.images?.map((item) =>
+    payload.input.images = input.images?.map((item): Record<string, string> =>
       item.file_token ? { type: item.type, file_token: item.file_token } : {},
     )
   }

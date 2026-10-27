@@ -1,0 +1,12 @@
+[
+  {"duration":7,"title":"从模型到真实求解","enTitle":"From a mesh to a solver","source":"physics","zh":"一个三维模型，怎样真正进入仿真？先看这段真实的柔体求解。","en":"How does a 3D mesh enter a simulation? Start with a real deformable-body solver run."},
+  {"duration":8,"title":"Real2Sim Studio","enTitle":"Real2Sim Studio","source":"ui","zh":"这是 Real2Sim Studio。把资产预览、材料配置和场景导出，放进一个本地工作台。","en":"Real2Sim Studio brings asset inspection, material presets and scene export into a local workbench."},
+  {"duration":9,"title":"先跑通一个可信样例","enTitle":"Start with a trusted sample","source":"ui","zh":"加载内置的自制样例。不需要接口密钥，也不会调用付费生成服务。","en":"Load the included procedural sample. No API key, and no paid generation calls."},
+  {"duration":8,"title":"几何预览，不冒充物理","enTitle":"Geometry preview, not physics","source":"ui","zh":"在浏览器中旋转和检查模型。这里是几何预览，不是物理仿真。","en":"Rotate and inspect the mesh in your browser. This is geometry preview, not physics."},
+  {"duration":9,"title":"当前参数，进入导出包","enTitle":"Export the settings you chose","source":"settings","zh":"调整材料预设和重力。导出的配置，使用你当前选择的参数。","en":"Adjust material presets and gravity. The exported package uses your current settings."},
+  {"duration":10,"title":"模型、配置、脚本，一起交付","enTitle":"Mesh, configuration and script","source":"package","zh":"下载完整场景包。模型、配置、运行脚本和依赖说明，都放在一起。","en":"Download a complete scene package: mesh, manifest, material profile, Python script and requirements."},
+  {"duration":10,"title":"Genesis FEM · CPU","enTitle":"Genesis FEM on CPU","source":"physics","zh":"运行导出的脚本。这里的下落、接触和形变，来自 Genesis 求解器，不是预设动画。","en":"Run the exported script. Falling, contact and deformation here come from Genesis, not a canned animation."},
+  {"duration":9,"title":"可复现，也有明确边界","enTitle":"Reproducible, with clear limits","source":"metrics","zh":"这是有限元弹性体样例。材料数值是示意预设，不是实物标定，也没有承诺仿真到现实的精度。","en":"This is an FEM elastic sample. Presets are illustrative, not measured material properties or sim-to-real validation."},
+  {"duration":10,"title":"可选生成服务 · Alpha 限制","enTitle":"Optional generation · Alpha limits","source":"limits","zh":"外部生成服务可能收费。可选 Python 依赖仍有已知风险，请先在隔离环境运行可信样例。","en":"External generation may incur fees. The optional Python dependencies have known advisories. Use the trusted sample in isolation."},
+  {"duration":10,"title":"下载、复现、反馈","enTitle":"Download. Reproduce. Contribute.","source":"end","zh":"代码和自制样例按 MIT 许可开放。下载并运行示例，欢迎把复现结果和问题反馈给我们。","en":"Code and the procedural sample are MIT-licensed. Run the example and share reproducible results and issues."}
+]

@@ -23,7 +23,7 @@ export type TripoTaskOutput = {
 
 export type StoredTask = {
   taskId: string
-  kind: 'generation' | 'flex'
+  kind: 'generation' | 'flex' | 'sample'
   title: string
   status: TaskStatus
   requestId?: string
@@ -85,7 +85,17 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export function health() {
-  return requestJson<{ ok: boolean; apiConfigured: boolean; defaultModel: string }>('/api/health')
+  return requestJson<{ ok: boolean; apiConfigured: boolean; demo: boolean; defaultModel: string }>('/api/health')
+}
+
+export function importExample() {
+  return requestJson<{ task: StoredTask }>('/api/examples/soft-puck', { method: 'POST' })
+}
+
+export function exportGenesis(sourceTaskId: string, simulation: SimulationProfile) {
+  return requestJson<{ archiveUrl: string }>('/api/genesis/packages', {
+    method: 'POST', body: JSON.stringify({ sourceTaskId, simulation }),
+  })
 }
 
 export function listTasks() {

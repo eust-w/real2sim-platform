@@ -28,6 +28,8 @@ import {
   health,
   isLiveStatus,
   listTasks,
+  importExample,
+  exportGenesis,
   refreshTask,
   type FlexRequest,
   type GenerationRequest,
@@ -272,7 +274,7 @@ function Timeline({
               className={task.taskId === currentTaskId ? 'timeline-item selected' : 'timeline-item'}
               onClick={() => onSelect(task)}
             >
-              <span>{task.kind === 'flex' ? t.tabs.flex : t.tabs.generation}</span>
+              <span>{task.kind === 'sample' ? t.app.demoMode : task.kind === 'flex' ? t.tabs.flex : t.tabs.generation}</span>
               <strong>{task.title}</strong>
               <StatusPill status={task.status} t={t} />
             </button>
@@ -290,6 +292,7 @@ function App() {
   const t = messages[locale]
   const [activeTab, setActiveTab] = useState<TabId>('generation')
   const [apiConfigured, setApiConfigured] = useState(false)
+  const [demoMode, setDemoMode] = useState(false)
   const [tasks, setTasks] = useState<StoredTask[]>([])
   const [currentTask, setCurrentTask] = useState<StoredTask | null>(null)
   const [error, setError] = useState('')
@@ -313,7 +316,6 @@ function App() {
   const [sourceModelUrl, setSourceModelUrl] = useState('')
   const [behaviorPrompt, setBehaviorPrompt] = useState('保持原始结构比例，转化为适合抓取、挤压和碰撞仿真的柔性版本')
   const [simulation, setSimulation] = useState<SimulationProfile>(defaultSimulation)
-  const [lastSimulationExport, setLastSimulationExport] = useState<Record<string, unknown> | null>(null)
 
   const successfulTasks = useMemo(() => tasks.filter((task) => getModelUrl(task)), [tasks])
 
@@ -328,7 +330,7 @@ function App() {
 
   useEffect(() => {
     health()
-      .then((response) => setApiConfigured(response.apiConfigured))
+      .then((response) => { setApiConfigured(response.apiConfigured); setDemoMode(response.demo) })
       .catch(() => setApiConfigured(false))
     loadTasks().catch((loadError) => setError(loadError instanceof Error ? loadError.message : t.errors.generic))
   }, [loadTasks, t.errors.generic])
@@ -359,11 +361,41 @@ function App() {
   }
 
   function selectTaskForFlex(task: StoredTask) {
+    setCurrentTask(task)
     setSourceTaskId(task.taskId)
     setSourceName(task.title)
     setSourcePrompt(getSourcePrompt(task))
     setSourceModelUrl(getModelUrl(task))
+    if (task.request.simulation && typeof task.request.simulation === 'object') {
+      setSimulation(task.request.simulation as SimulationProfile)
+    }
     setActiveTab('flex')
+  }
+
+  async function loadExample() {
+    setBusy(true)
+    setError('')
+    try {
+      const { task } = await importExample()
+      selectTaskForFlex(task)
+      await loadTasks()
+    } catch (e) { setError(e instanceof Error ? e.message : t.errors.generic) }
+    finally { setBusy(false) }
+  }
+
+  async function downloadGenesis() {
+    setBusy(true)
+    setError('')
+    try {
+      const id = sourceTaskId || currentTask?.taskId
+      if (!id) return
+      const result = await exportGenesis(id, simulation)
+      const link = document.createElement('a')
+      link.href = result.archiveUrl
+      link.download = ''
+      link.click()
+    } catch (e) { setError(e instanceof Error ? e.message : t.errors.generic) }
+    finally { setBusy(false) }
   }
 
   async function handleGenerationSubmit(event: React.FormEvent) {
@@ -415,7 +447,6 @@ function App() {
     try {
       const response = await createFlexTask(payload)
       setCurrentTask(response.task)
-      setLastSimulationExport(response.simulationExport)
       await loadTasks()
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : t.errors.generic)
@@ -439,9 +470,7 @@ function App() {
   }
 
   function exportSimulation() {
-    const profile =
-      lastSimulationExport ||
-      ({
+    const profile = {
         schema: 'real2sim.flexProfile.v1',
         source: {
           taskId: sourceTaskId || undefined,
@@ -457,7 +486,13 @@ function App() {
           maxDeformation: simulation.deformation / 100,
           gravity: simulation.gravity,
         },
-      } satisfies Record<string, unknown>)
+        solver: {
+          type: simulation.material === 'cloth' ? 'pbd_cloth' : 'fem_elastic',
+          substeps: 4,
+          parametersArePresets: true,
+        },
+        generatedAt: new Date().toISOString(),
+      } satisfies Record<string, unknown>
     downloadJson('real2sim-flex-profile.json', profile)
   }
 
@@ -488,9 +523,12 @@ function App() {
           </button>
         </nav>
         <div className="top-actions">
+          <button type="button" className="secondary-button" onClick={loadExample} disabled={busy}>
+            <Box size={16} />{t.app.loadExample}
+          </button>
           <span className={apiConfigured ? 'api-status ready' : 'api-status missing'}>
             {apiConfigured ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
-            {apiConfigured ? t.app.apiReady : t.app.apiMissing}
+            {demoMode ? t.app.demoMode : apiConfigured ? t.app.apiReady : t.app.apiMissing}
           </span>
           <button type="button" className="language-button" onClick={() => setLocale(locale === 'zh' ? 'en' : 'zh')}>
             <Languages size={16} />
@@ -603,7 +641,7 @@ function App() {
                 />
               </div>
 
-              <button type="submit" className="submit-button" disabled={busy}>
+              <button type="submit" className="submit-button" disabled={busy || !apiConfigured}>
                 <Sparkles size={17} />
                 {busy ? t.generation.generating : t.generation.generate}
               </button>
@@ -637,17 +675,17 @@ function App() {
                 </select>
               </Field>
 
-              <Field label={t.flex.sourcePrompt}>
+              {apiConfigured ? <Field label={t.flex.sourcePrompt}>
                 <textarea value={sourcePrompt} onChange={(event) => setSourcePrompt(event.target.value)} />
-              </Field>
+              </Field> : null}
 
               <Field label={t.flex.sourceModelUrl}>
                 <input value={sourceModelUrl} onChange={(event) => setSourceModelUrl(event.target.value)} />
               </Field>
 
-              <Field label={t.flex.behavior}>
+              {apiConfigured ? <Field label={t.flex.behavior}>
                 <textarea value={behaviorPrompt} onChange={(event) => setBehaviorPrompt(event.target.value)} placeholder={t.flex.behaviorPlaceholder} />
-              </Field>
+              </Field> : null}
 
               <Field label={t.flex.material}>
                 <Segmented<SimulationProfile['material']>
@@ -673,6 +711,7 @@ function App() {
                   <Field label={label as string} inline key={key as string}>
                     <input
                       type="range"
+                      aria-label={label as string}
                       min={min as number}
                       max={max as number}
                       step={step as number}
@@ -690,10 +729,13 @@ function App() {
               </div>
 
               <div className="button-grid">
-                <button type="submit" className="submit-button" disabled={busy}>
+                <button type="button" className="submit-button" onClick={downloadGenesis} disabled={busy || !sourceTaskId}>
+                  <Package size={17} />{t.task.exportGenesis}
+                </button>
+                {apiConfigured ? <button type="submit" className="secondary-button" disabled={busy}>
                   <Waves size={17} />
                   {busy ? t.generation.generating : t.flex.generate}
-                </button>
+                </button> : null}
                 <button type="button" className="secondary-button" onClick={exportSimulation}>
                   <SlidersHorizontal size={17} />
                   {t.flex.export}

@@ -16,6 +16,10 @@ dist-ssr
 !.env.example
 .data
 coverage
+.venv
+__pycache__
+*.pyc
+artifacts
 playwright-report
 test-results
 

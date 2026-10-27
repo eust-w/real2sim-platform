@@ -53,6 +53,7 @@ describe('flex profile helpers', () => {
 
     expect(profile.schema).toBe('real2sim.flexProfile.v1')
     expect(profile.physics.elasticity).toBe(0.5)
-    expect(profile.solver.preserveVolume).toBe(false)
+    expect(profile.solver.type).toBe('pbd_cloth')
+    expect(profile.solver.parametersArePresets).toBe(true)
   })
 })
